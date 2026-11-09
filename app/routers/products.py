@@ -1,6 +1,7 @@
-# 상품 등록·목록 엔드포인트 (API.md 항목 1, 1-2 / US-08 / F-01)
-# 수정 엔드포인트는 API.md에 항목이 없고
-# first-feature.md 2절 #2가 '오늘 만들지 않음'이라 만들지 않았다.
+# 상품 등록·목록·수정 엔드포인트 (API.md 항목 1, 1-2 / US-08 / F-01)
+# 수정(PATCH /products/{id})은 US-08 인수 조건 #2를 위한 것으로,
+# API.md에 아직 항목이 없다.
+# 경로·응답은 항목 1과 같은 규칙으로 맞춘 [제안]이며 PM이 API.md에 옮겨야 한다.
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import JSONResponse
@@ -11,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.product import Product
 from app.models.user import StoreUser
-from app.schemas.product import ProductCreate, ProductOut
+from app.schemas.product import ProductCreate, ProductOut, ProductUpdate
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -60,7 +61,8 @@ def create_product(
             400, "DUPLICATE_PRODUCT_CODE", "이미 등록된 상품 코드입니다"
         )
 
-    # ② 필수값 누락(REQUIRED_FIELD_MISSING)은 필수 필드가 미정이라 아직 검사하지 않는다
+    # ② 필수값(product_code) 누락은 요청 검증 단계에서
+    #    REQUIRED_FIELD_MISSING으로 막는다 (app/main.py)
 
     product = Product(store_id=user.store_id, **body.model_dump())
     db.add(product)
@@ -86,3 +88,63 @@ def list_products(
     return db.scalars(
         select(Product).where(Product.store_id == user.store_id).order_by(Product.id)
     ).all()
+
+
+@router.patch("/{product_id}", response_model=ProductOut)
+def update_product(
+    product_id: int,
+    body: ProductUpdate,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """상품 수정 (US-08 인수 조건 #2).
+    상품 행에는 지금 쓰는 환산값·기준 단가 하나만 둔다. 그래서 수정하면 그 뒤에
+    확정하는 건부터 새 값이 쓰인다. 이미 재고 반영 완료된 건의 수량·단가가 바뀌지
+    않으려면, 입고 확정(US-04·US-06)을 만들 때 그때의 수량·단가를 검수 건 쪽에
+    따로 저장해야 한다 (DATA-MODEL.md '직원 확정값을 어디에 저장할지' 미정).
+    직원도 수정할 수 있는지는 미정이라(backlog US-08) 역할로 막지 않는다."""
+    # 다른 매장 상품은 없는 상품과 똑같이 다룬다 (US-08 권한).
+    # 응답 코드는 API.md에 없어 [제안]으로 404 PRODUCT_NOT_FOUND를 쓴다.
+    product = db.scalar(
+        select(Product).where(
+            Product.id == product_id, Product.store_id == user.store_id
+        )
+    )
+    if product is None:
+        return error_response(404, "PRODUCT_NOT_FOUND", "상품을 찾을 수 없습니다")
+
+    changes = body.model_dump(exclude_unset=True)
+
+    # ③ 환산값이 0 이하이면 저장하지 않는다 (US-08, 등록과 같은 규칙)
+    conversion_qty = changes.get("conversion_qty")
+    if conversion_qty is not None and conversion_qty <= 0:
+        return error_response(
+            400, "INVALID_CONVERSION_QTY", "환산값은 0보다 커야 합니다"
+        )
+
+    # ① 바꾸려는 상품 코드가 같은 매장의 다른 상품에 있으면 저장하지 않는다 (US-08)
+    new_code = changes.get("product_code")
+    if new_code is not None and new_code != product.product_code:
+        exists = db.scalar(
+            select(Product.id).where(
+                Product.store_id == user.store_id,
+                Product.product_code == new_code,
+                Product.id != product.id,
+            )
+        )
+        if exists is not None:
+            return error_response(
+                400, "DUPLICATE_PRODUCT_CODE", "이미 등록된 상품 코드입니다"
+            )
+
+    for field, value in changes.items():
+        setattr(product, field, value)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        return error_response(
+            400, "DUPLICATE_PRODUCT_CODE", "이미 등록된 상품 코드입니다"
+        )
+    db.refresh(product)
+    return product
