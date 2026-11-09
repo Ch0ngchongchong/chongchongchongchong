@@ -1,8 +1,8 @@
-# 발주 작성·승인·전달·조회 엔드포인트 (US-01 / F-02)
+# 발주 작성·승인·전달·취소·조회 엔드포인트 (US-01·US-02 / F-02)
 # API.md에 아직 항목이 없다. 경로·오류 코드·HTTP 상태 코드는 항목 1과 같은 규칙으로
 # 맞춘 [제안]이며 PM이 API.md에 옮겨야 한다.
 # 만들지 않은 것: R7 수량 한도 경고(한도 값 미정), 발주 줄 단위·발주 번호·작성일
-# (DATA-MODEL.md에 없음). 발주 취소(US-02)는 따로 추가한다.
+# (DATA-MODEL.md에 없음), `발주 확인 완료`에서의 취소(미정, US-02).
 # 재고는 이 파일의 어느 API에서도 바꾸지 않는다 (R3).
 
 from fastapi import APIRouter, Depends
@@ -14,6 +14,7 @@ from app.models.inspection import INSPECTION_UPLOAD_WAITING, Inspection
 from app.models.product import Product
 from app.models.purchase_order import (
     ORDER_AWAITING_DELIVERY,
+    ORDER_CANCELED,
     ORDER_CONFIRMED,
     ORDER_DRAFT,
     PurchaseOrder,
@@ -29,7 +30,7 @@ OWNER = "사장님"  # DATA-MODEL.md 매장 사용자 role
 
 
 def _forbidden_unless_owner(user: StoreUser):
-    # 직원은 발주를 승인·전달 완료할 수 없다 (US-01 권한)
+    # 직원은 발주를 승인·전달 완료·취소할 수 없다 (US-01·US-02 권한)
     if user.role != OWNER:
         return error_response(403, "FORBIDDEN_ROLE", "사장님만 할 수 있습니다")
     return None
@@ -49,7 +50,7 @@ def _not_found():
 
 
 def _invalid_status(order: PurchaseOrder):
-    # 상태가 맞지 않으면 바꾸지 않고 그대로 둔다
+    # 상태가 맞지 않으면 바꾸지 않고 그대로 둔다 (US-02 실패·거절)
     return error_response(
         400,
         "INVALID_STATUS_TRANSITION",
@@ -169,6 +170,29 @@ def mark_purchase_order_delivered(
         return _invalid_status(order)
     order.status = ORDER_AWAITING_DELIVERY
     db.add(Inspection(purchase_order_id=order.id, status=INSPECTION_UPLOAD_WAITING))
+    db.commit()
+    db.refresh(order)
+    return order
+
+
+@router.post("/{order_id}/cancel", response_model=PurchaseOrderOut)
+def cancel_purchase_order(
+    order_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """`발주 초안`이면 `발주 취소`(끝 상태)가 된다 (US-02).
+    그 밖의 상태는 취소할 수 없고 그대로 둔다.
+    `발주 확인 완료`에서 취소할 수 있는지는 미정이라(US-02 미확정) 지금은 막는다.
+    취소된 발주에는 입고 검수 건을 만들지 않는다."""
+    if (denied := _forbidden_unless_owner(user)) is not None:
+        return denied
+    order = _find_order(db, order_id, user)
+    if order is None:
+        return _not_found()
+    if order.status != ORDER_DRAFT:
+        return _invalid_status(order)
+    order.status = ORDER_CANCELED
     db.commit()
     db.refresh(order)
     return order

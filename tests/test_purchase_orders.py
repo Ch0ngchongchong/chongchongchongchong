@@ -1,4 +1,4 @@
-# US-01 발주 작성·승인·전달 (F-02)
+# US-01 발주 작성·승인·전달 / US-02 공급처 전달 전 발주 취소 (F-02)
 # 사용자: conftest.py 시드 — 1 = 매장 1 사장님, 2 = 매장 1 직원, 3 = 매장 2 사장님
 # 만들지 않은 인수 조건: US-01 R7 수량 한도 경고 (한도 값 미정)
 # '재고가 바뀌지 않는다'(R3)는 재고 모델이 아직 없어, 재고를 바꾸는 코드가
@@ -62,6 +62,10 @@ def _approve(client, order_id, headers=OWNER):
 
 def _mark_delivered(client, order_id, headers=OWNER):
     return client.post(f"/purchase-orders/{order_id}/mark-delivered", headers=headers)
+
+
+def _cancel(client, order_id, headers=OWNER):
+    return client.post(f"/purchase-orders/{order_id}/cancel", headers=headers)
 
 
 def _order_count():
@@ -170,3 +174,36 @@ def test_us01_other_store_cannot_view_order(client, draft_order):
     assert response.status_code >= 400
     listed = client.get("/purchase-orders", headers=OTHER_STORE_OWNER).json()
     assert draft_order["id"] not in [order["id"] for order in listed]
+
+
+# ---------- US-02 ----------
+
+
+def test_us02_cancel_draft_becomes_canceled(client, draft_order):
+    assert _cancel(client, draft_order["id"]).status_code == 200
+    assert _status(client, draft_order["id"]) == "발주 취소"
+    assert _inspections(draft_order["id"]) == []
+
+
+def test_us02_delivered_order_cannot_be_canceled(client, draft_order):
+    # 전달 완료로 표시하면 한 요청에서 `공급처 전달 완료` → `입고 대기`까지 가므로
+    # `공급처 전달 완료`에 머무는 발주는 없다.
+    # 전달 완료 표시 뒤(`입고 대기`)로 확인한다.
+    _approve(client, draft_order["id"])
+    _mark_delivered(client, draft_order["id"])
+    assert _cancel(client, draft_order["id"]).status_code >= 400
+    assert _status(client, draft_order["id"]) == "입고 대기"
+
+
+def test_us02_staff_cannot_cancel(client, draft_order):
+    assert _cancel(client, draft_order["id"], headers=STAFF).status_code >= 400
+    assert _status(client, draft_order["id"]) == "발주 초안"
+
+
+def test_us02_canceled_is_final_state(client, draft_order):
+    _cancel(client, draft_order["id"])
+    assert _approve(client, draft_order["id"]).status_code >= 400
+    assert _mark_delivered(client, draft_order["id"]).status_code >= 400
+    assert _cancel(client, draft_order["id"]).status_code >= 400
+    assert _status(client, draft_order["id"]) == "발주 취소"
+    assert _inspections(draft_order["id"]) == []
