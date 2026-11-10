@@ -31,6 +31,8 @@ MATCHING_STATEMENT = """\
 @pytest.fixture(autouse=True)
 def upload_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    # 리허설·테스트용으로 text/plain 명세서를 받게 한다 (기본은 사진·PDF만)
+    monkeypatch.setenv("ALLOW_TEXT_UPLOAD", "1")
     return tmp_path
 
 
@@ -127,6 +129,7 @@ def test_demo_happy_path(client, product_id, order_id, inspection_id):
     [line] = draft["lines"]
     assert line["read"] == {
         "name": "서울우유 1000ml",
+        "spec": None,
         "quantity": 10,
         "unit": "개",
         "unit_price": 2650,
@@ -203,7 +206,12 @@ def test_different_line_goes_to_owner_approval(
     assert draft["lines"][0]["match_status"] == "수량 다름"
     assert draft["all_match"] is False
 
-    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    # 예외 건은 예외 사유가 있어야 확정된다 (US-06)
+    response = client.post(
+        f"/inspections/{inspection_id}/confirm",
+        json={"exception_reason": "명세서와 실물 확인함"},
+        headers=STAFF,
+    )
     assert response.json()["status"] == "사장 승인 대기"
     assert _stock(client, product_id) == 0
     assert _order_status(client, order_id) == "입고 대기"
@@ -212,7 +220,12 @@ def test_different_line_goes_to_owner_approval(
 def test_price_difference_goes_to_owner_approval(client, product_id, inspection_id):
     _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,900원\n".encode())
     assert _get(client, inspection_id)["lines"][0]["match_status"] == "단가 다름"
-    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    # 예외 건은 예외 사유가 있어야 확정된다 (US-06)
+    response = client.post(
+        f"/inspections/{inspection_id}/confirm",
+        json={"exception_reason": "명세서와 실물 확인함"},
+        headers=STAFF,
+    )
     assert response.json()["status"] == "사장 승인 대기"
     assert _stock(client, product_id) == 0
 

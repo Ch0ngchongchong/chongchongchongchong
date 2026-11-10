@@ -9,7 +9,13 @@ from fastapi.exceptions import RequestValidationError
 
 from app import models  # noqa: F401  create_all()이 테이블을 알도록 모델을 불러온다
 from app.db import Base, engine
-from app.routers import inspections, inventory, products, purchase_orders
+from app.routers import (
+    inspections,
+    inventory,
+    notifications,
+    products,
+    purchase_orders,
+)
 from app.routers.products import error_response
 from app.schemas.product import REQUIRED_PRODUCT_FIELDS
 
@@ -26,6 +32,7 @@ app.include_router(products.router)
 app.include_router(purchase_orders.router)
 app.include_router(inspections.router)
 app.include_router(inventory.router)
+app.include_router(notifications.router)
 
 
 def _is_empty(error: dict) -> bool:

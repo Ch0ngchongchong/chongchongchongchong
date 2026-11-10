@@ -44,12 +44,35 @@ class DraftLine:
     unit_price: int | None
     amount: int | None
     candidates: list[Candidate] = field(default_factory=list)
+    spec: str | None = None
+    # 확신하지 못한 필드 이름. 그 필드 값은 추측하지 않고 None으로 둔다 (03 3-4)
+    uncertain_fields: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Usage:
+    """LLM 호출 사용량 (판독 로그, US-03). LLM을 부르지 않으면 0이다."""
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost: float = 0.0
+
+
+@dataclass
+class DraftDocument:
+    """03 3-4 공통 JSON 모양의 판독 초안"""
+
+    lines: list[DraftLine]
+    document_date: str | None = None
+    total_amount: int | None = None
+    uncertain_fields: list[str] = field(default_factory=list)
+    usage: Usage = field(default_factory=Usage)
 
 
 class Structurer(Protocol):
     def structure(
         self, masked_text: str, products: list[ProductRef]
-    ) -> list[DraftLine]: ...
+    ) -> DraftDocument: ...
 
 
 # 예: "서울우유 1000ml 10개 × 2,650원 = 26,500원"
@@ -59,6 +82,12 @@ _LINE = re.compile(
     r"[×xX*]\s*(?P<price>\d[\d,]*)\s*원?"
     r"(?:\s*=\s*(?P<amount>\d[\d,]*)\s*원?)?\s*$"
 )
+
+
+# 예: "합계 26,500원"
+_TOTAL = re.compile(r"^(?:합계|총액|총 ?금액)\s*:?\s*(?P<total>\d[\d,]*)\s*원?\s*$")
+# 예: "2026-10-20", "2026.10.20"
+_DATE = re.compile(r"(?P<y>20\d{2})[-./](?P<m>\d{1,2})[-./](?P<d>\d{1,2})")
 
 
 def _to_int(value: str | None) -> int | None:
@@ -104,14 +133,20 @@ def _candidates(name: str, products: list[ProductRef]) -> list[Candidate]:
 
 
 class RuleBasedStructurer:
-    def structure(
-        self, masked_text: str, products: list[ProductRef]
-    ) -> list[DraftLine]:
+    def structure(self, masked_text: str, products: list[ProductRef]) -> DraftDocument:
         lines = []
+        total = None
+        date = None
         for raw in masked_text.splitlines():
-            match = _LINE.match(raw.strip())
+            text = raw.strip()
+            if (found := _TOTAL.match(text)) is not None:
+                total = _to_int(found["total"])
+                continue
+            if date is None and (found := _DATE.search(text)) is not None:
+                date = f"{found['y']}-{int(found['m']):02d}-{int(found['d']):02d}"
+            match = _LINE.match(text)
             if match is None:
-                continue  # 머리글·합계 같은 줄
+                continue  # 머리글 같은 줄
             name = match["name"].strip()
             lines.append(
                 DraftLine(
@@ -123,7 +158,8 @@ class RuleBasedStructurer:
                     candidates=_candidates(name, products),
                 )
             )
-        return lines
+        # 규칙 기반이라 '확신하지 못한 값'은 만들지 않는다. LLM 구현이 채운다.
+        return DraftDocument(lines=lines, document_date=date, total_amount=total)
 
 
 def get_structurer() -> Structurer:
