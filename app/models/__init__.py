@@ -2,10 +2,14 @@
 from app.models.inspection import Inspection
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder, PurchaseOrderLine
+from app.models.receiving import InspectionDocument, InspectionLine, Inventory
 from app.models.user import StoreUser
 
 __all__ = [
     "Inspection",
+    "InspectionDocument",
+    "InspectionLine",
+    "Inventory",
     "Product",
     "PurchaseOrder",
     "PurchaseOrderLine",
