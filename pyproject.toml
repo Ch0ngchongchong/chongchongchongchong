@@ -14,6 +14,7 @@ description = "딱 재고 — 거래명세서 판독·입고 확인 서비스 �
 requires-python = ">=3.12"
 dependencies = [
     "fastapi",
+    "openai>=1.66,<3",
     "uvicorn[standard]",       # 실행 서버
     "python-multipart",        # 사진·PDF 업로드(UploadFile), US-03
     "sqlalchemy>=2.0",         # 2.0 방식, 동기로 사용

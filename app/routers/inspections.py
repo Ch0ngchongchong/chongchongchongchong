@@ -15,15 +15,14 @@
 # 만들지 않은 것: 사장 승인·반려(US-06), 알림 발송, 원본 파일 내려받기.
 # 업로드·확정을 직원만 할 수 있는지는 정하지 않아 역할로 막지 않는다.
 
-import os
-import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
+from fastapi.responses import Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.audit import ChangeHistory, DocumentContent, ExceptionPhoto, ReadingLog
 from app.models.inspection import Inspection
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder
@@ -38,7 +37,7 @@ from app.models.receiving import (
 )
 from app.models.user import StoreUser
 from app.routers.products import error_response, get_current_user
-from app.schemas.inspection import InspectionLineUpdate, InspectionOut
+from app.schemas.inspection import InspectionLineUpdate, InspectionOut, ReasonInput
 from app.services.reading import (
     apply_stock,
     evaluate,
@@ -57,11 +56,6 @@ ALLOWED_CONTENT_TYPES = {
     "text/plain",
 }
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # [제안] 10MB
-
-
-def _upload_dir() -> Path:
-    # 원본 파일을 저장할 곳. 환경변수 UPLOAD_DIR, 없으면 ./uploads
-    return Path(os.environ.get("UPLOAD_DIR", "uploads"))
 
 
 def _find(db: Session, inspection_id: int, user: StoreUser, lock: bool = False):
@@ -93,11 +87,34 @@ def _invalid_status(inspection: Inspection):
 def _to_out(db: Session, inspection: Inspection) -> dict:
     document = latest_document(db, inspection.id)
     evaluation = evaluate(db, inspection)
+    histories = db.scalars(
+        select(ChangeHistory)
+        .where(ChangeHistory.inspection_id == inspection.id)
+        .order_by(ChangeHistory.id.desc())
+    ).all()
+    exception_reason = next(
+        (
+            h.new_value.get("reason")
+            for h in histories
+            if h.kind == "직원 확정" and h.new_value and h.new_value.get("reason")
+        ),
+        None,
+    )
+    reject_reason = next(
+        (
+            h.new_value.get("reason")
+            for h in histories
+            if h.kind == "reject" and h.new_value
+        ),
+        None,
+    )
     return {
         "id": inspection.id,
         "purchase_order_id": inspection.purchase_order_id,
         "status": inspection.status,
         "ai_draft": inspection.status == INSPECTION_STAFF_REVIEW,
+        "exception_reason": exception_reason,
+        "reject_reason": reject_reason,
         "document": None
         if document is None
         else {
@@ -204,20 +221,16 @@ def upload_document(
             400, "FILE_TOO_LARGE", "10MB 이하 파일만 올릴 수 있습니다"
         )
 
-    folder = _upload_dir() / str(inspection.id)
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{uuid.uuid4().hex}{Path(file.filename or '').suffix.lower()}"
-    path.write_bytes(data)
-
-    db.add(
-        InspectionDocument(
-            inspection_id=inspection.id,
-            uploaded_by=user.id,
-            filename=file.filename or path.name,
-            content_type=content_type,
-            stored_path=str(path),
-        )
+    document = InspectionDocument(
+        inspection_id=inspection.id,
+        uploaded_by=user.id,
+        filename=file.filename or "document",
+        content_type=content_type,
+        stored_path="database",
     )
+    db.add(document)
+    db.flush()
+    db.add(DocumentContent(document_id=document.id, data=data))
     inspection.status = INSPECTION_READING
     db.commit()
     db.refresh(inspection)
@@ -265,6 +278,17 @@ def update_line(
                 400, "UNREGISTERED_PRODUCT", "등록되지 않은 상품이 있습니다"
             )
     for field, value in changes.items():
+        old = getattr(line, field)
+        if old != value:
+            db.add(
+                ChangeHistory(
+                    inspection_id=inspection.id,
+                    changed_by=user.id,
+                    kind="직원 수정",
+                    old_value={"line_id": line.id, field: old},
+                    new_value={"line_id": line.id, field: value},
+                )
+            )
         setattr(line, field, value)
     db.commit()
     return _to_out(db, inspection)
@@ -275,6 +299,7 @@ def confirm_inspection(
     inspection_id: int,
     user: StoreUser = Depends(get_current_user),
     db: Session = Depends(get_db),
+    body: ReasonInput | None = None,
 ):
     """직원 확정 (데모 4~5단계, US-04).
     - 확인할 칸이 남아 있으면 확정하지 않는다
@@ -294,11 +319,252 @@ def confirm_inspection(
             f"확인할 칸이 {evaluation.check_count}개 남아 있습니다",
         )
 
+    if not evaluation.all_match and (body is None or not body.reason.strip()):
+        return error_response(400, "REASON_REQUIRED", "예외 사유를 입력해 주세요")
     if evaluation.all_match:
         apply_stock(db, inspection, evaluation)
         inspection.status = INSPECTION_STOCK_APPLIED
     else:
         inspection.status = INSPECTION_OWNER_APPROVAL
+    db.add(
+        ChangeHistory(
+            inspection_id=inspection.id,
+            changed_by=user.id,
+            kind="직원 확정",
+            old_value={"status": INSPECTION_STAFF_REVIEW},
+            new_value={
+                "status": inspection.status,
+                "reason": body.reason if body else None,
+            },
+        )
+    )
+    if evaluation.all_match:
+        for check in evaluation.lines:
+            db.add(
+                ChangeHistory(
+                    inspection_id=inspection.id,
+                    changed_by=user.id,
+                    kind="재고 반영",
+                    new_value={
+                        "product_id": check.product.id,
+                        "quantity": check.base_quantity,
+                    },
+                )
+            )
     db.commit()
     db.refresh(inspection)
+    return _to_out(db, inspection)
+
+
+@router.get("/{inspection_id}/history")
+def inspection_history(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if _find(db, inspection_id, user) is None:
+        return _not_found()
+    if user.role != "사장님":
+        return error_response(403, "FORBIDDEN", "사장님만 조회할 수 있습니다")
+    rows = db.scalars(
+        select(ChangeHistory)
+        .where(ChangeHistory.inspection_id == inspection_id)
+        .order_by(ChangeHistory.changed_at, ChangeHistory.id)
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "changed_by": r.changed_by,
+            "changed_at": r.changed_at,
+            "kind": r.kind,
+            "old_value": r.old_value,
+            "new_value": r.new_value,
+        }
+        for r in rows
+    ]
+
+
+@router.get("/{inspection_id}/reading-logs")
+def reading_logs(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if _find(db, inspection_id, user) is None:
+        return _not_found()
+    if user.role != "사장님":
+        return error_response(403, "FORBIDDEN", "사장님만 조회할 수 있습니다")
+    rows = db.scalars(
+        select(ReadingLog)
+        .where(ReadingLog.inspection_id == inspection_id)
+        .order_by(ReadingLog.id)
+    ).all()
+    return [
+        {
+            "id": r.id,
+            "document_id": r.document_id,
+            "input_tokens": r.input_tokens,
+            "output_tokens": r.output_tokens,
+            "cost": r.cost,
+            "elapsed_seconds": r.elapsed_seconds,
+            "outcome": r.outcome,
+        }
+        for r in rows
+    ]
+
+
+@router.post("/{inspection_id}/exception-photos")
+def upload_exception_photo(
+    inspection_id: int,
+    file: UploadFile = File(...),
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    inspection = _find(db, inspection_id, user, lock=True)
+    if inspection is None:
+        return _not_found()
+    if inspection.status != INSPECTION_STAFF_REVIEW:
+        return _invalid_status(inspection)
+    content_type = (file.content_type or "").lower()
+    if content_type not in {"image/jpeg", "image/png", "image/heic"}:
+        return error_response(400, "UNSUPPORTED_FILE_TYPE", "사진만 올릴 수 있습니다")
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if not data or len(data) > MAX_UPLOAD_BYTES:
+        return error_response(400, "INVALID_FILE_SIZE", "사진은 10MB 이하이어야 합니다")
+    photo = ExceptionPhoto(
+        inspection_id=inspection_id,
+        uploaded_by=user.id,
+        filename=file.filename or "photo",
+        content_type=content_type,
+        data=data,
+    )
+    db.add(photo)
+    db.flush()
+    db.add(
+        ChangeHistory(
+            inspection_id=inspection_id,
+            changed_by=user.id,
+            kind="예외 사진 추가",
+            new_value={"photo_id": photo.id},
+        )
+    )
+    db.commit()
+    return {
+        "id": photo.id,
+        "filename": photo.filename,
+        "content_type": photo.content_type,
+    }
+
+
+@router.get("/{inspection_id}/exception-photos")
+def list_exception_photos(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if _find(db, inspection_id, user) is None:
+        return _not_found()
+    photos = db.scalars(
+        select(ExceptionPhoto)
+        .where(ExceptionPhoto.inspection_id == inspection_id)
+        .order_by(ExceptionPhoto.id)
+    ).all()
+    return [
+        {
+            "id": p.id,
+            "filename": p.filename,
+            "content_type": p.content_type,
+            "uploaded_at": p.uploaded_at,
+        }
+        for p in photos
+    ]
+
+
+@router.get("/{inspection_id}/exception-photos/{photo_id}")
+def get_exception_photo(
+    inspection_id: int,
+    photo_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if _find(db, inspection_id, user) is None:
+        return _not_found()
+    photo = db.scalar(
+        select(ExceptionPhoto).where(
+            ExceptionPhoto.id == photo_id, ExceptionPhoto.inspection_id == inspection_id
+        )
+    )
+    if photo is None:
+        return error_response(404, "PHOTO_NOT_FOUND", "사진을 찾을 수 없습니다")
+    return Response(
+        content=photo.data,
+        media_type=photo.content_type,
+        headers={
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+        },
+    )
+
+
+@router.post("/{inspection_id}/{action}", response_model=InspectionOut)
+def owner_action(
+    inspection_id: int,
+    action: str,
+    body: ReasonInput | None = None,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    inspection = _find(db, inspection_id, user, lock=True)
+    if inspection is None:
+        return _not_found()
+    transitions = {
+        "approve": (INSPECTION_OWNER_APPROVAL, INSPECTION_STOCK_APPLIED, "사장님"),
+        "reject": (INSPECTION_OWNER_APPROVAL, "반려", "사장님"),
+        "cancel-confirmation": (
+            INSPECTION_OWNER_APPROVAL,
+            INSPECTION_STAFF_REVIEW,
+            "직원",
+        ),
+        "reinspect": ("반려", INSPECTION_STAFF_REVIEW, "직원"),
+        "close": ("반려", "검수 종료", "사장님"),
+    }
+    if action not in transitions:
+        return error_response(404, "NOT_FOUND", "요청한 작업을 찾을 수 없습니다")
+    before, after, role = transitions[action]
+    if user.role != role:
+        return error_response(403, "FORBIDDEN", "이 작업을 할 권한이 없습니다")
+    if inspection.status != before:
+        return _invalid_status(inspection)
+    if action == "reject" and (body is None or not body.reason.strip()):
+        return error_response(400, "REASON_REQUIRED", "반려 사유를 입력해 주세요")
+    if action == "approve":
+        evaluation = evaluate(db, inspection)
+        if evaluation.check_count:
+            return error_response(
+                400, "CHECK_REQUIRED", "확인이 필요한 항목이 있습니다"
+            )
+        apply_stock(db, inspection, evaluation)
+        for check in evaluation.lines:
+            db.add(
+                ChangeHistory(
+                    inspection_id=inspection.id,
+                    changed_by=user.id,
+                    kind="재고 반영",
+                    new_value={
+                        "product_id": check.product.id,
+                        "quantity": check.base_quantity,
+                    },
+                )
+            )
+    inspection.status = after
+    db.add(
+        ChangeHistory(
+            inspection_id=inspection.id,
+            changed_by=user.id,
+            kind=action,
+            old_value={"status": before},
+            new_value={"status": after, "reason": body.reason if body else None},
+        )
+    )
+    db.commit()
     return _to_out(db, inspection)

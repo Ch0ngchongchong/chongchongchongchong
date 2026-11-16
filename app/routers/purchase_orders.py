@@ -23,6 +23,7 @@ from app.models.purchase_order import (
 from app.models.user import StoreUser
 from app.routers.products import error_response, get_current_user
 from app.schemas.purchase_order import PurchaseOrderCreate, PurchaseOrderOut
+from app.services.reading import remaining_quantities
 
 router = APIRouter(prefix="/purchase-orders", tags=["purchase-orders"])
 
@@ -196,3 +197,53 @@ def cancel_purchase_order(
     db.commit()
     db.refresh(order)
     return order
+
+
+@router.get("/{order_id}/remaining")
+def get_remaining(
+    order_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    order = _find_order(db, order_id, user)
+    if order is None:
+        return _not_found()
+    return [
+        {"product_id": product_id, "remaining_quantity": qty}
+        for product_id, qty in remaining_quantities(db, order).items()
+    ]
+
+
+@router.post("/{order_id}/redeliveries")
+def create_redelivery(
+    order_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    order = db.scalar(
+        select(PurchaseOrder)
+        .where(PurchaseOrder.id == order_id, PurchaseOrder.store_id == user.store_id)
+        .with_for_update()
+    )
+    if order is None:
+        return _not_found()
+    if order.status != ORDER_AWAITING_DELIVERY:
+        return _invalid_status(order)
+    previous = db.scalars(
+        select(Inspection).where(Inspection.purchase_order_id == order_id)
+    ).all()
+    if not previous or any(
+        row.status not in {"검수 종료", "재고 반영 완료"} for row in previous
+    ):
+        return error_response(
+            400, "INSPECTION_IN_PROGRESS", "진행 중인 검수가 있습니다"
+        )
+    if not any(remaining_quantities(db, order).values()):
+        return error_response(400, "NO_REMAINING_QUANTITY", "미입고 수량이 없습니다")
+    inspection = Inspection(
+        purchase_order_id=order.id, status=INSPECTION_UPLOAD_WAITING
+    )
+    db.add(inspection)
+    db.commit()
+    db.refresh(inspection)
+    return {"inspection_id": inspection.id, "status": inspection.status}

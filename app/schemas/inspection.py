@@ -58,6 +58,8 @@ class InspectionOut(BaseModel):
     status: str
     # true면 화면 위쪽에 "AI가 읽은 초안이에요. 확인한 뒤 확정해 주세요" 배너를 띄운다
     ai_draft: bool
+    exception_reason: str | None = None
+    reject_reason: str | None = None
     document: DocumentOut | None
     lines: list[InspectionLineOut]
     missing_order_lines: list[MissingOrderLineOut]
@@ -72,6 +74,7 @@ class InspectionLineUpdate(BaseModel):
 
     product_id: int | None = None
     quantity: int | None = None
+    unit: str | None = None
 
 
 class InventoryOut(BaseModel):
@@ -80,3 +83,7 @@ class InventoryOut(BaseModel):
     name: str | None
     base_unit: str | None
     quantity: int
+
+
+class ReasonInput(BaseModel):
+    reason: str
