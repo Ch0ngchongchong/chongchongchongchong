@@ -7,13 +7,17 @@
 # 이 파일의 판독 단계는 재고를 바꾸지 않는다. 재고는 apply_stock()에서만 바꾸고,
 # apply_stock()은 직원 확정 API에서만 부른다 (R3).
 
+import logging
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
+from app.models.audit import ChangeHistory, DocumentContent, ReadingLog
 from app.models.inspection import Inspection
 from app.models.product import Product
 from app.models.purchase_order import ORDER_RECEIVED, PurchaseOrder
@@ -58,17 +62,30 @@ def run_reading(inspection_id: int) -> None:
         try:
             if document is None:
                 raise OcrError("올린 명세서가 없습니다")
-            text = get_ocr_engine().read_text(
-                Path(document.stored_path), document.content_type
-            )
+            content = db.get(DocumentContent, document.id)
+            if content is None:
+                text = get_ocr_engine().read_text(
+                    Path(document.stored_path), document.content_type
+                )
+            else:
+                with tempfile.NamedTemporaryFile() as temporary:
+                    temporary.write(content.data)
+                    temporary.flush()
+                    text = get_ocr_engine().read_text(
+                        Path(temporary.name), document.content_type
+                    )
             products = db.scalars(
                 select(Product).where(Product.store_id == order.store_id)
             ).all()
             refs = [ProductRef(p.id, p.product_code, p.name, p.spec) for p in products]
-            drafts = get_structurer().structure(mask_sensitive(text), refs)
+            structurer = get_structurer()
+            drafts = structurer.structure(mask_sensitive(text), refs)
             if not drafts:
                 raise OcrError("명세서에서 품목 줄을 찾지 못했습니다")
-        except OcrError as exc:
+        except Exception as exc:
+            if not isinstance(exc, OcrError):
+                logging.exception("명세서 판독 실패")
+                exc = OcrError("명세서를 판독하지 못했습니다")
             # 판독 실패: `업로드 대기`로 돌아가고,
             # 다시 올려 달라는 안내를 남긴다 (US-03)
             # 알림 발송 자체는 아직 없다. 화면이 폴링으로 read_error를 보여 준다.
@@ -76,6 +93,21 @@ def run_reading(inspection_id: int) -> None:
             inspection.status = INSPECTION_STATUS_UPLOAD_WAITING
             if document is not None:
                 document.read_error = f"{exc}. 명세서를 다시 올려 주세요"
+            if document is not None:
+                db.add(
+                    ReadingLog(
+                        inspection_id=inspection_id,
+                        document_id=document.id,
+                        elapsed_seconds=max(
+                            0,
+                            (
+                                datetime.now(timezone.utc)
+                                - document.uploaded_at.replace(tzinfo=timezone.utc)
+                            ).total_seconds(),
+                        ),
+                        outcome="실패",
+                    )
+                )
             db.commit()
             return
 
@@ -106,6 +138,39 @@ def run_reading(inspection_id: int) -> None:
                     product_id=top,
                     quantity=draft.quantity,
                     unit=draft.unit,
+                )
+            )
+        db.add(
+            ReadingLog(
+                inspection_id=inspection_id,
+                document_id=document.id,
+                elapsed_seconds=max(
+                    0,
+                    (
+                        datetime.now(timezone.utc)
+                        - document.uploaded_at.replace(tzinfo=timezone.utc)
+                    ).total_seconds(),
+                ),
+                outcome="성공",
+                input_tokens=getattr(structurer, "input_tokens", None),
+                output_tokens=getattr(structurer, "output_tokens", None),
+                cost=getattr(structurer, "cost", None),
+            )
+        )
+        for no, draft in enumerate(drafts, start=1):
+            db.add(
+                ChangeHistory(
+                    inspection_id=inspection_id,
+                    changed_by=None,
+                    kind="판독 원본",
+                    new_value={
+                        "line_no": no,
+                        "name": draft.name,
+                        "quantity": draft.quantity,
+                        "unit": draft.unit,
+                        "unit_price": draft.unit_price,
+                        "amount": draft.amount,
+                    },
                 )
             )
         document.read_error = None
@@ -161,13 +226,31 @@ class Evaluation:
         return not self.missing and all(c.status == MATCH_OK for c in self.lines)
 
 
+def remaining_quantities(db: Session, order: PurchaseOrder) -> dict[int, int]:
+    remaining = {}
+    for line in order.lines:
+        remaining[line.product_id] = remaining.get(line.product_id, 0) + line.quantity
+    rows = db.execute(
+        select(InspectionLine.product_id, InspectionLine.applied_base_quantity)
+        .join(Inspection, Inspection.id == InspectionLine.inspection_id)
+        .where(
+            Inspection.purchase_order_id == order.id,
+            InspectionLine.applied_base_quantity.is_not(None),
+        )
+    ).all()
+    for product_id, quantity in rows:
+        if product_id in remaining:
+            remaining[product_id] = max(0, remaining[product_id] - quantity)
+    return remaining
+
+
 def evaluate(db: Session, inspection: Inspection) -> Evaluation:
     order = db.get(PurchaseOrder, inspection.purchase_order_id)
-    ordered = {}
-    for po_line in order.lines:
-        ordered[po_line.product_id] = (
-            ordered.get(po_line.product_id, 0) + po_line.quantity
-        )
+    ordered = {
+        product_id: qty
+        for product_id, qty in remaining_quantities(db, order).items()
+        if qty > 0
+    }
 
     lines = db.scalars(
         select(InspectionLine)
@@ -180,7 +263,18 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
     checks = []
     for line in lines:
         product = db.get(Product, line.product_id) if line.product_id else None
-        if product is None or line.quantity is None:
+        if (
+            product is None
+            or line.quantity is None
+            or line.quantity <= 0
+            or not line.unit
+            or line.unit not in {product.base_unit, product.pack_unit}
+            or (
+                line.unit == product.pack_unit
+                and line.unit != product.base_unit
+                and not product.conversion_qty
+            )
+        ):
             checks.append(LineCheck(line, product, None, None, MATCH_NEEDS_CHECK))
             continue
         base = to_base_quantity(line.quantity, line.unit, product)
@@ -226,24 +320,55 @@ def apply_stock(db: Session, inspection: Inspection, evaluation: Evaluation) -> 
     """직원 확정 뒤에만 부른다 (R3). 커밋은 부른 쪽에서 한다.
     확정 때의 환산값·단가를 줄에 남겨 둔다 (나중에 상품을 고쳐도 이 건은 그대로)."""
     order = db.get(PurchaseOrder, inspection.purchase_order_id)
+    # 같은 상품에 대한 동시 입고와 같은 검수의 중복 행을 직렬화한다.
+    db.scalars(
+        select(Product)
+        .where(Product.id.in_(sorted({check.product.id for check in evaluation.lines})))
+        .order_by(Product.id)
+        .with_for_update()
+    ).all()
+    stocks = {}
     for check in evaluation.lines:
         product = check.product
         check.line.applied_base_quantity = check.base_quantity
         check.line.applied_conversion_qty = product.conversion_qty
+        if check.line.read_unit_price is not None:
+            product.base_unit_price = _base_unit_price(check.line, product)
         check.line.applied_unit_price = product.base_unit_price
 
-        stock = db.scalar(
-            select(Inventory)
-            .where(
-                Inventory.store_id == order.store_id,
-                Inventory.product_id == product.id,
+        stock = stocks.get(product.id)
+        if stock is None:
+            stock = db.scalar(
+                select(Inventory)
+                .where(
+                    Inventory.store_id == order.store_id,
+                    Inventory.product_id == product.id,
+                )
+                .with_for_update()
             )
-            .with_for_update()
-        )
         if stock is None:
             stock = Inventory(
                 store_id=order.store_id, product_id=product.id, quantity=0
             )
             db.add(stock)
+        stocks[product.id] = stock
         stock.quantity += check.base_quantity
-    order.status = ORDER_RECEIVED
+    # 이미 반영된 검수 건까지 합산해 미입고가 남으면 발주를 열어 둔다.
+    totals = {}
+    applied_lines = db.execute(
+        select(InspectionLine.product_id, InspectionLine.applied_base_quantity)
+        .join(Inspection, Inspection.id == InspectionLine.inspection_id)
+        .where(
+            Inspection.purchase_order_id == order.id,
+            InspectionLine.applied_base_quantity.is_not(None),
+        )
+    ).all()
+    for product_id, quantity in applied_lines:
+        totals[product_id] = totals.get(product_id, 0) + quantity
+    for check in evaluation.lines:
+        totals[check.product.id] = totals.get(check.product.id, 0) + check.base_quantity
+    ordered = {}
+    for line in order.lines:
+        ordered[line.product_id] = ordered.get(line.product_id, 0) + line.quantity
+    if all(totals.get(product_id, 0) >= qty for product_id, qty in ordered.items()):
+        order.status = ORDER_RECEIVED

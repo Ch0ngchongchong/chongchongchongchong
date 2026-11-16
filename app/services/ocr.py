@@ -45,7 +45,58 @@ class DemoOcr:
 
 
 def get_ocr_engine() -> OcrEngine:
-    name = os.environ.get("OCR_ENGINE", "demo")
+    name = os.environ.get(
+        "OCR_ENGINE", "local" if os.environ.get("STRUCTURER") == "openai" else "demo"
+    )
     if name == "demo":
         return DemoOcr()
+    if name == "local":
+        return LocalOcr()
     raise RuntimeError(f"알 수 없는 OCR_ENGINE입니다: {name}")
+
+
+class LocalOcr:
+    """서버의 Tesseract와 Poppler로 원본을 외부에 전송하지 않고 읽는다."""
+
+    def read_text(self, path: Path, content_type: str) -> str:
+        import subprocess
+        import tempfile
+
+        if content_type == "text/plain":
+            return DemoOcr().read_text(path, content_type)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                if content_type == "application/pdf":
+                    extracted = subprocess.run(
+                        ["pdftotext", "-layout", str(path), "-"],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=45,
+                    ).stdout
+                    if extracted.strip():
+                        return extracted
+                    prefix = str(Path(directory) / "page")
+                    subprocess.run(
+                        ["pdftoppm", "-png", "-r", "200", str(path), prefix],
+                        capture_output=True,
+                        check=True,
+                        timeout=90,
+                    )
+                    images = sorted(Path(directory).glob("page-*.png"))
+                else:
+                    images = [path]
+                if not images:
+                    raise OcrError("명세서 페이지를 읽을 수 없습니다")
+                return "\n".join(
+                    subprocess.run(
+                        ["tesseract", str(image), "stdout", "-l", "kor+eng"],
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                        timeout=90,
+                    ).stdout
+                    for image in images
+                )
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise OcrError("서버 OCR 처리에 실패했습니다") from exc
