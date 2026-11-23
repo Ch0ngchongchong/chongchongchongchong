@@ -2,7 +2,6 @@
 # 확인하지 않는 것
 # 근거: document 저장소 docs/requirements/backlog.md US-04 인수 조건
 # 사용자: conftest.py 시드 — 1 = 매장 1 사장님, 2 = 매장 1 직원, 3 = 매장 2 사장님
-# 이 파일은 테스트를 먼저 쓴 것이다. 구현이 없는 조건은 @NOT_IMPLEMENTED로 표시했다.
 #
 # 이 파일에서 다루지 않은 US-04 인수 조건 (팀 질문으로 남김)
 #  - 직원이 판독 결과에 없는 줄을 추가하고 '직원이 추가한 줄'로 이력에 남기기:
@@ -12,12 +11,6 @@
 from types import SimpleNamespace
 
 import pytest
-
-# 아직 구현이 없는 인수 조건 표시. 기대값은 그대로 두고 표시만 한다.
-# strict=True라서 구현이 끝나 통과하면 이 표시 때문에 실패한다 → 그때 표시를 지운다
-NOT_IMPLEMENTED = pytest.mark.xfail(
-    strict=True, reason="US-04 구현 전 (테스트 먼저 작성, document 이슈 #144)"
-)
 
 OWNER = {"X-User-Id": "1"}
 STAFF = {"X-User-Id": "2"}
@@ -50,9 +43,8 @@ MATCHING_STATEMENT = """\
 
 
 @pytest.fixture(autouse=True)
-def upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
-    return tmp_path
+def allow_text_upload(monkeypatch):
+    monkeypatch.setenv("ALLOW_TEXT_UPLOAD", "1")
 
 
 def _create_product(client, product):
@@ -149,7 +141,6 @@ def _llm_returns(monkeypatch, document):
 # ---------- (정상) 예외 건이면 `사장 승인 대기`, 재고는 그대로 ----------
 
 
-@NOT_IMPLEMENTED
 def test_us04_damaged_line_goes_to_owner_approval(client, product_id, inspection_id):
     # US-04 (정상) 확정한 내용에 파손이 하나라도 있으면(예외 건) `사장 승인 대기`가
     # 되고 재고는 바뀌지 않는다. 파손 표시 방법은 PR #8 API 문서의
@@ -192,7 +183,6 @@ def test_us04_order_line_missing_in_statement_goes_to_owner_approval(client):
 # ---------- (실패·거절) 강조된 칸이 확인되지 않았으면 확정할 수 없다 ----------
 
 
-@NOT_IMPLEMENTED
 def test_us04_multiple_candidates_must_be_checked_before_confirm(
     client, product_id, inspection_id
 ):
@@ -214,7 +204,6 @@ def test_us04_multiple_candidates_must_be_checked_before_confirm(
     assert response.json()["status"] == "재고 반영 완료"
 
 
-@NOT_IMPLEMENTED
 def test_us04_rule_check_failure_blocks_confirm(client, product_id, inspection_id):
     # US-04 (실패·거절) 규칙 검증 실패 칸(수량×단가≠금액)이 확인되지 않았으면
     # 확정할 수 없다. 10 × 2,650 = 26,500인데 금액이 30,000
@@ -229,7 +218,6 @@ def test_us04_rule_check_failure_blocks_confirm(client, product_id, inspection_i
     assert _stock(client, product_id) == 0
 
 
-@NOT_IMPLEMENTED
 def test_us04_uncertain_value_must_be_filled_before_confirm(
     monkeypatch, client, product_id, inspection_id
 ):
@@ -242,6 +230,7 @@ def test_us04_uncertain_value_must_be_filled_before_confirm(
             "lines": [
                 {
                     "name": "서울우유 1000ml",
+                    "spec": None,
                     "quantity": 10,
                     "unit": "개",
                     "unit_price": 2650,
