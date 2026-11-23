@@ -466,6 +466,54 @@ def test_exception_photos_are_store_scoped(client, inspection_id):
     )
 
 
+# ---------- 정확도 지표 (US-07, 미팅1 피드백 8) ----------
+
+
+def test_metrics_for_perfect_match(client, product_id, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    metrics = client.get(f"/inspections/{inspection_id}/metrics", headers=OWNER).json()
+    assert metrics["line_count"] == 1
+    assert metrics["field_accuracy"] == {
+        "품목": 1.0,
+        "수량": 1.0,
+        "단위": 1.0,
+        "단가": 1.0,
+        "금액": 1.0,
+    }
+    assert metrics["corrected_line_ratio"] == 0.0
+    assert metrics["added_line_ratio"] == 0.0
+    assert metrics["upload_to_confirm_seconds"] >= 0
+
+
+def test_metrics_reflect_corrected_unknown_item(client, product_id, inspection_id):
+    _upload(client, inspection_id, "알 수 없는 품목 10개 × 2,650원\n".encode())
+    [line] = _get(client, inspection_id)["lines"]
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"product_id": product_id},
+        headers=STAFF,
+    )
+    client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    metrics = client.get(f"/inspections/{inspection_id}/metrics", headers=OWNER).json()
+    # 후보가 없어 직원이 고른 품목만 정확도에서 틀렸다고 센다
+    assert metrics["field_accuracy"]["품목"] == 0.0
+    assert metrics["field_accuracy"]["수량"] == 1.0
+    assert metrics["field_accuracy"]["단위"] == 1.0
+    assert metrics["corrected_line_ratio"] == 1.0
+
+
+def test_metrics_only_owner_can_view(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    response = client.get(f"/inspections/{inspection_id}/metrics", headers=STAFF)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    response = client.get(
+        f"/inspections/{inspection_id}/metrics", headers=OTHER_STORE_OWNER
+    )
+    assert response.status_code == 404
+
+
 def test_openai_structurer_sends_masked_text_and_records_usage(
     monkeypatch, client, inspection_id
 ):

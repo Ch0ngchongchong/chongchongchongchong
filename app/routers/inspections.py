@@ -16,6 +16,8 @@
 # 업로드·확정을 직원만 할 수 있는지는 정하지 않아 역할로 막지 않는다.
 
 
+from datetime import timezone
+
 from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -441,6 +443,105 @@ def reading_logs(
         }
         for r in rows
     ]
+
+
+@router.get("/{inspection_id}/metrics")
+def inspection_metrics(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """판독 원본값과 직원 확정값을 비교한 필드별 정확도·고친 줄 비율·
+    행 누락률·업로드~확정 시간 (US-07, 미팅1 피드백 8).
+
+    - 품목·수량·단위는 직원이 PATCH lines/{line_id}로 고칠 수 있는 필드라
+      판독 원본(candidates[0]·read_quantity·read_unit)과 비교해 정확도를 잰다.
+    - 단가·금액은 지금 직원이 고칠 수 있는 칸이 아니다(InspectionLineUpdate에
+      product_id·quantity·unit만 있다). 그래서 언제나 1.0이 나온다 — 실제로
+      틀릴 수 있게 고치는 기능이 생기면 다시 계산해야 한다(DATA-MODEL.md
+      '변경 이력에 어느 필드가 바뀌었는지' 아직 정하지 못한 것과 같은 결).
+    - 행 누락률(직원이 추가한 줄 비율)은 '판독 원본' 이력에 없는 line_no를
+      센다. 지금은 직원이 줄을 추가하는 API가 없어 항상 0이지만, 생기면
+      이 계산은 바로 맞게 작동한다.
+    """
+    inspection = _find(db, inspection_id, user)
+    if inspection is None:
+        return _not_found()
+    denied = forbidden_unless_role(
+        user, "사장님", message="사장님만 조회할 수 있습니다"
+    )
+    if denied is not None:
+        return denied
+
+    lines = db.scalars(
+        select(InspectionLine).where(InspectionLine.inspection_id == inspection_id)
+    ).all()
+    total = len(lines)
+
+    original_line_nos = {
+        h.new_value["line_no"]
+        for h in db.scalars(
+            select(ChangeHistory).where(
+                ChangeHistory.inspection_id == inspection_id,
+                ChangeHistory.kind == "판독 원본",
+            )
+        ).all()
+        if h.new_value
+    }
+
+    item_matches = quantity_matches = unit_matches = corrected = added = 0
+    for line in lines:
+        top_candidate = line.candidates[0]["product_id"] if line.candidates else None
+        if line.product_id == top_candidate:
+            item_matches += 1
+        if line.quantity == line.read_quantity:
+            quantity_matches += 1
+        if line.unit == line.read_unit:
+            unit_matches += 1
+        if (
+            line.product_id != top_candidate
+            or line.quantity != line.read_quantity
+            or line.unit != line.read_unit
+        ):
+            corrected += 1
+        if line.line_no not in original_line_nos:
+            added += 1
+
+    def ratio(count: int) -> float | None:
+        return None if total == 0 else count / total
+
+    confirm_entry = db.scalar(
+        select(ChangeHistory)
+        .where(
+            ChangeHistory.inspection_id == inspection_id,
+            ChangeHistory.kind == "직원 확정",
+        )
+        .order_by(ChangeHistory.id.desc())
+    )
+    document = latest_document(db, inspection_id)
+    upload_to_confirm_seconds = None
+    if confirm_entry is not None and document is not None:
+        upload_to_confirm_seconds = max(
+            0,
+            (
+                confirm_entry.changed_at.replace(tzinfo=timezone.utc)
+                - document.uploaded_at.replace(tzinfo=timezone.utc)
+            ).total_seconds(),
+        )
+
+    return {
+        "line_count": total,
+        "field_accuracy": {
+            "품목": ratio(item_matches),
+            "수량": ratio(quantity_matches),
+            "단위": ratio(unit_matches),
+            "단가": ratio(total),
+            "금액": ratio(total),
+        },
+        "corrected_line_ratio": ratio(corrected),
+        "added_line_ratio": ratio(added),
+        "upload_to_confirm_seconds": upload_to_confirm_seconds,
+    }
 
 
 @router.post("/{inspection_id}/exception-photos")
