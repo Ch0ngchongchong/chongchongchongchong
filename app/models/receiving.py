@@ -14,6 +14,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     ForeignKey,
     Integer,
@@ -90,6 +91,16 @@ class InspectionLine(Base):
     applied_base_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     applied_conversion_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     applied_unit_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # 규칙 검증 실패("수량×단가≠금액"·"OCR 글자에 없는 숫자") 칸을 직원이
+    # 확인했다는 표시. 추측 없이 빈칸으로 강조만 하고, 직원이 실물을 보고
+    # 확인하면 이 칸을 true로 바꿔 확정할 수 있게 한다 (US-03 안전장치).
+    checked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # quantity·unit_price·amount 중 OCR 글자에 그대로 없는 숫자가 있으면 true
+    # (판독 때 한 번만 계산해 둔다. OCR 원문을 따로 저장하지 않기 위해서다)
+    numbers_not_in_ocr: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
 
 
 class Inventory(Base):

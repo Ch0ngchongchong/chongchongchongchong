@@ -45,6 +45,11 @@ class InspectionLineOut(BaseModel):
     order_quantity: int | None
     # 일치 / 확인 필요 / 발주에 없음 / 수량 다름 / 단가 다름
     match_status: str
+    # 규칙 검증 실패 칸: AMOUNT_MISMATCH(수량×단가≠금액) · NUMBER_NOT_IN_OCR
+    # (OCR 글자에 없는 숫자). 비어 있으면 통과
+    rule_violations: list[str]
+    # 직원이 위 칸을 확인했다는 표시 (US-03 안전장치)
+    checked: bool
 
 
 class MissingOrderLineOut(BaseModel):
@@ -67,6 +72,12 @@ class InspectionOut(BaseModel):
     check_count: int
     # 발주와 모두 같으면 true (확정하면 바로 재고 반영)
     all_match: bool
+    # 판독이 읽은 명세서 합계. 못 찾았으면 null (검증하지 않음)
+    total_amount: int | None
+    # 줄 금액 합≠합계면 true (규칙 검증 실패 칸)
+    summary_mismatch: bool
+    # 위 칸을 사장님/직원이 확인했다는 표시
+    summary_checked: bool
 
 
 class InspectionLineUpdate(BaseModel):
@@ -75,6 +86,8 @@ class InspectionLineUpdate(BaseModel):
     product_id: int | None = None
     quantity: int | None = None
     unit: str | None = None
+    # 규칙 검증 실패 칸을 확인했다는 표시 (US-03 안전장치)
+    checked: bool | None = None
 
 
 class InventoryOut(BaseModel):

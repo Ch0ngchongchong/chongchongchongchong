@@ -163,6 +163,8 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
                 else c.base_quantity,
                 "order_quantity": c.order_quantity,
                 "match_status": c.status,
+                "rule_violations": c.rule_violations,
+                "checked": c.line.checked,
             }
             for c in evaluation.lines
         ],
@@ -172,6 +174,9 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
         ],
         "check_count": evaluation.check_count,
         "all_match": evaluation.all_match,
+        "total_amount": inspection.read_total_amount,
+        "summary_mismatch": evaluation.summary_mismatch,
+        "summary_checked": evaluation.summary_checked,
     }
 
 
@@ -315,6 +320,37 @@ def update_line(
             )
         setattr(line, field, value)
     db.commit()
+    return _to_out(db, inspection)
+
+
+@router.post("/{inspection_id}/summary-check", response_model=InspectionOut)
+def check_summary(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """줄 금액 합≠합계(규칙 검증 실패)를 확인했다고 표시한다. `직원 확인 대기`에서만
+    된다. PR #8 설명에서 약속했던 'PATCH /inspections/{id}/summary'에 해당하는
+    기능인데 실제로는 없었다 — 이번에 새로 만들었다."""
+    inspection = _find(db, inspection_id, user, lock=True)
+    if inspection is None:
+        return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
+    if inspection.status != INSPECTION_STAFF_REVIEW:
+        return _invalid_status(inspection)
+    if not inspection.summary_checked:
+        inspection.summary_checked = True
+        db.add(
+            ChangeHistory(
+                inspection_id=inspection.id,
+                changed_by=user.id,
+                kind="합계 확인",
+                old_value={"summary_checked": False},
+                new_value={"summary_checked": True},
+            )
+        )
+        db.commit()
     return _to_out(db, inspection)
 
 
