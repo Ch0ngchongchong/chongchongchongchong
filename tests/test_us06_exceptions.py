@@ -1,7 +1,6 @@
 # US-06 예외 건 사장 승인·반려 — 인수 조건 중 test_demo_scenario.py가 확인하지 않는 것
 # 근거: document 저장소 docs/requirements/backlog.md US-06 인수 조건
 # 사용자: conftest.py 시드 — 1 = 매장 1 사장님, 2 = 매장 1 직원
-# 이 파일은 테스트를 먼저 쓴 것이다. 구현이 없는 조건은 @NOT_IMPLEMENTED로 표시했다.
 #
 # 이 파일에서 다루지 않은 US-06 인수 조건 (팀 질문으로 남김)
 #  - 승인 시 '매입 단가' 반영: 매입 단가가 상품 base_unit_price와 같은 값인지
@@ -11,12 +10,6 @@
 #  - (화면) 사장님 화면 크기 기준: 화면(frontend) 테스트 범위
 
 import pytest
-
-# 아직 구현이 없는 인수 조건 표시. 기대값은 그대로 두고 표시만 한다.
-# strict=True라서 구현이 끝나 통과하면 이 표시 때문에 실패한다 → 그때 표시를 지운다
-NOT_IMPLEMENTED = pytest.mark.xfail(
-    strict=True, reason="US-06 구현 전 (테스트 먼저 작성, document 이슈 #147)"
-)
 
 OWNER = {"X-User-Id": "1"}
 STAFF = {"X-User-Id": "2"}
@@ -40,6 +33,8 @@ SHORT_DELIVERY = "서울우유 1000ml 8개 × 2,650원 = 21,200원\n합계 21,20
 @pytest.fixture(autouse=True)
 def upload_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    # 리허설·테스트용으로 text/plain 명세서를 받게 한다 (기본은 사진·PDF만, PR #24)
+    monkeypatch.setenv("ALLOW_TEXT_UPLOAD", "1")
     return tmp_path
 
 
@@ -126,7 +121,6 @@ def _to_rejected(client, inspection_id):
 # ---------- (정상) 사장님 화면에 예외 종류와 직원 예외 사유·사진 ----------
 
 
-@NOT_IMPLEMENTED
 def test_us06_owner_sees_exception_type(client, product_id, inspection_id):
     # US-06 (정상) 예외 건이 `사장 승인 대기`가 되면 사장님 화면에 예외 종류
     # (초과 입고·높은 단가·미등록 상품 등)가 보인다.
