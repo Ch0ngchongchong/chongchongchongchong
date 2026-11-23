@@ -8,8 +8,9 @@
 # apply_stock()은 직원 확정 API에서만 부른다 (R3).
 
 import logging
+import re
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -31,7 +32,7 @@ from app.models.receiving import (
 )
 from app.services.masking import mask_sensitive
 from app.services.ocr import OcrError, get_ocr_engine
-from app.services.structurer import ProductRef, get_structurer
+from app.services.structurer import DraftLine, ProductRef, get_structurer
 
 # 줄 대조 결과
 MATCH_OK = "일치"
@@ -40,6 +41,23 @@ MATCH_NOT_IN_ORDER = "발주에 없음"
 MATCH_QTY_DIFF = "수량 다름"
 MATCH_PRICE_DIFF = "단가 다름"
 MATCH_MISSING_IN_STATEMENT = "명세서에 없음"  # 발주 줄인데 명세서에 없음
+
+# 규칙 검증 실패 칸 (US-03 안전장치, 미팅1 피드백 6)
+RULE_AMOUNT_MISMATCH = "AMOUNT_MISMATCH"  # 수량 × 단가 ≠ 금액
+RULE_NUMBER_NOT_IN_OCR = "NUMBER_NOT_IN_OCR"  # OCR 글자에 없는 숫자가 판독 결과에 있음
+
+
+def _numbers_in_text(text: str) -> set[str]:
+    """OCR 글자(원문, 가리기 전)에 실제로 적힌 숫자들(쉼표 뗀 문자열).
+    느슨한 검사다 — 다른 자리에 우연히 같은 숫자가 있어도 통과로 본다."""
+    return {token.replace(",", "") for token in re.findall(r"\d[\d,]*", text)}
+
+
+def _has_number_not_in_ocr(draft: DraftLine, numbers_in_ocr: set[str]) -> bool:
+    for value in (draft.quantity, draft.unit_price, draft.amount):
+        if value is not None and str(value) not in numbers_in_ocr:
+            return True
+    return False
 
 
 def latest_document(db: Session, inspection_id: int) -> InspectionDocument | None:
@@ -82,6 +100,8 @@ def run_reading(inspection_id: int) -> None:
             drafts = structurer.structure(mask_sensitive(text), refs)
             if not drafts:
                 raise OcrError("명세서에서 품목 줄을 찾지 못했습니다")
+            total_amount = getattr(structurer, "total_amount", None)
+            numbers_in_ocr = _numbers_in_text(text)
         except Exception as exc:
             if not isinstance(exc, OcrError):
                 logging.exception("명세서 판독 실패")
@@ -138,8 +158,11 @@ def run_reading(inspection_id: int) -> None:
                     product_id=top,
                     quantity=draft.quantity,
                     unit=draft.unit,
+                    numbers_not_in_ocr=_has_number_not_in_ocr(draft, numbers_in_ocr),
                 )
             )
+        inspection.read_total_amount = total_amount
+        inspection.summary_checked = False
         db.add(
             ReadingLog(
                 inspection_id=inspection_id,
@@ -203,6 +226,7 @@ class LineCheck:
     base_quantity: int | None
     order_quantity: int | None
     status: str
+    rule_violations: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -215,11 +239,22 @@ class MissingOrderLine:
 class Evaluation:
     lines: list[LineCheck]
     missing: list[MissingOrderLine]
+    # 줄 금액 합 ≠ 합계 (03 3-4 규칙 검증 실패). 합계를 못 읽었으면 항상 False
+    summary_mismatch: bool = False
+    summary_checked: bool = False
 
     @property
     def check_count(self) -> int:
-        """직원이 채워야 확정할 수 있는 칸 수 (품목 미선택·수량 없음)."""
-        return sum(1 for c in self.lines if c.status == MATCH_NEEDS_CHECK)
+        """직원이 채워야 확정할 수 있는 칸 수 (품목 미선택·수량 없음·
+        규칙 검증 실패 미확인·합계 불일치 미확인)."""
+        needs_check = sum(1 for c in self.lines if c.status == MATCH_NEEDS_CHECK)
+        unresolved_violations = sum(
+            1 for c in self.lines if c.rule_violations and not c.line.checked
+        )
+        unresolved_summary = (
+            1 if (self.summary_mismatch and not self.summary_checked) else 0
+        )
+        return needs_check + unresolved_violations + unresolved_summary
 
     @property
     def all_match(self) -> bool:
@@ -262,6 +297,7 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
     received: dict[int, int] = {}
     checks = []
     for line in lines:
+        violations = _rule_violations(line)
         product = db.get(Product, line.product_id) if line.product_id else None
         if (
             product is None
@@ -275,11 +311,15 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
                 and not product.conversion_qty
             )
         ):
-            checks.append(LineCheck(line, product, None, None, MATCH_NEEDS_CHECK))
+            checks.append(
+                LineCheck(line, product, None, None, MATCH_NEEDS_CHECK, violations)
+            )
             continue
         base = to_base_quantity(line.quantity, line.unit, product)
         received[product.id] = received.get(product.id, 0) + base
-        checks.append(LineCheck(line, product, base, ordered.get(product.id), ""))
+        checks.append(
+            LineCheck(line, product, base, ordered.get(product.id), "", violations)
+        )
 
     for check in checks:
         if check.status:
@@ -303,7 +343,34 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
         for product_id, qty in ordered.items()
         if product_id not in received
     ]
-    return Evaluation(checks, missing)
+
+    lines_amount_sum = sum(
+        check.line.read_amount for check in checks if check.line.read_amount is not None
+    )
+    summary_mismatch = (
+        inspection.read_total_amount is not None
+        and lines_amount_sum != inspection.read_total_amount
+    )
+    return Evaluation(
+        checks, missing, summary_mismatch, inspection.summary_checked
+    )
+
+
+def _rule_violations(line: InspectionLine) -> list[str]:
+    """규칙 검증 실패 칸 (US-03 안전장치, 미팅1 피드백 6).
+    품목 매칭(MATCH_*)과는 다른 축이라 따로 둔다 — 틀렸다고 해서
+    예외 건(US-06)이 되는 건 아니고, 직원이 확인(checked)해야 확정할 수 있다."""
+    violations = []
+    if (
+        line.read_quantity is not None
+        and line.read_unit_price is not None
+        and line.read_amount is not None
+        and line.read_quantity * line.read_unit_price != line.read_amount
+    ):
+        violations.append(RULE_AMOUNT_MISMATCH)
+    if line.numbers_not_in_ocr:
+        violations.append(RULE_NUMBER_NOT_IN_OCR)
+    return violations
 
 
 def _base_unit_price(line: InspectionLine, product: Product) -> int:

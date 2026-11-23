@@ -466,6 +466,108 @@ def test_exception_photos_are_store_scoped(client, inspection_id):
     )
 
 
+# ---------- 규칙 검증 실패 칸 (US-03 안전장치, 미팅1 피드백 6) ----------
+
+
+def test_amount_mismatch_blocks_confirm_until_checked(
+    client, product_id, inspection_id
+):
+    _upload(
+        client,
+        inspection_id,
+        "서울우유 1000ml 10개 × 2,650원 = 20,000원\n".encode(),
+    )
+    line = _get(client, inspection_id)["lines"][0]
+    assert line["rule_violations"] == ["AMOUNT_MISMATCH"]
+    assert line["checked"] is False
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CHECK_REQUIRED"
+
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"checked": True},
+        headers=STAFF,
+    )
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "재고 반영 완료"
+
+
+def test_number_not_in_ocr_is_flagged(
+    client, product_id, inspection_id, monkeypatch
+):
+    from app.services import reading
+    from app.services.structurer import Candidate, DraftLine
+
+    class FakeStructurer:
+        total_amount = None
+
+        def structure(self, masked_text, products):
+            return [
+                DraftLine(
+                    name="서울우유 1000ml",
+                    quantity=10,
+                    unit="개",
+                    unit_price=2650,
+                    amount=99999,  # OCR 글자(아래 명세서)에 없는 숫자
+                    candidates=[Candidate(product_id, 1.0, "테스트 후보")],
+                )
+            ]
+
+    monkeypatch.setattr(reading, "get_structurer", lambda: FakeStructurer())
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,650원\n".encode())
+    line = _get(client, inspection_id)["lines"][0]
+    assert "NUMBER_NOT_IN_OCR" in line["rule_violations"]
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CHECK_REQUIRED"
+
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"checked": True},
+        headers=STAFF,
+    )
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 200, response.text
+
+
+def test_summary_mismatch_blocks_confirm_until_summary_checked(
+    client, product_id, inspection_id
+):
+    statement = "서울우유 1000ml 10개 × 2,650원 = 26,500원\n합계 30,000원\n"
+    _upload(client, inspection_id, statement.encode())
+    draft = _get(client, inspection_id)
+    assert draft["total_amount"] == 30000
+    assert draft["summary_mismatch"] is True
+    assert draft["summary_checked"] is False
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CHECK_REQUIRED"
+
+    client.post(f"/inspections/{inspection_id}/summary-check", headers=STAFF)
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 200, response.text
+
+
+def test_summary_check_requires_assigned_employee_or_owner(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode(), headers=STAFF)
+    response = client.post(
+        f"/inspections/{inspection_id}/summary-check", headers=OTHER_STAFF
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    assert (
+        client.post(
+            f"/inspections/{inspection_id}/summary-check", headers=OWNER
+        ).status_code
+        == 200
+    )
+
+
 # ---------- 정확도 지표 (US-07, 미팅1 피드백 8) ----------
 
 
