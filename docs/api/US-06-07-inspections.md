@@ -4,12 +4,12 @@
 
 | 메서드·경로 | 권한 | 동작 |
 | --- | --- | --- |
-| POST `/inspections/{id}/approve` | 사장님 | 승인 대기 건의 재고와 판독 단가 반영 |
+| POST `/inspections/{id}/approve` | 사장님 | 재고 수량 반영 및 검수 줄에 판독 단가 기록 |
 | POST `/inspections/{id}/reject` | 사장님 | `{"reason":"반려 사유"}` 필수, 반려 |
 | POST `/inspections/{id}/cancel-confirmation` | 직원 | 승인 전 확정 취소 |
 | POST `/inspections/{id}/reinspect` | 직원 | 반려 건을 직원 확인 대기로 변경 |
 | POST `/inspections/{id}/close` | 사장님 | 반려 건 검수 종료 |
-| GET `/inspections/{id}/history` | 사장님 | 변경 이력 시간순 조회 |
+| GET `/inspections/{id}/history` | 사장님 | `changes`에 변경 이력, `reading_logs`에 판독 로그 조회 |
 | GET `/inspections/{id}/reading-logs` | 사장님 | 문서별 판독 결과·시간·토큰·비용 조회 |
 
 규칙 기반 데모 판독기는 실제 LLM을 호출하지 않으므로 토큰과 비용은 `null`입니다. 새 업로드 원본은 DB에 저장하고 OCR 처리 시 임시 파일로만 사용합니다. 앱 시작 시 `create_all`로 새 테이블을 만들 권한이 필요합니다. 기존 디스크에 저장된 문서는 종전 경로로 읽습니다.

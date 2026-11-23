@@ -31,6 +31,8 @@ MATCHING_STATEMENT = """\
 @pytest.fixture(autouse=True)
 def upload_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
+    # 리허설·테스트용으로 text/plain 명세서를 받게 한다 (기본은 사진·PDF만)
+    monkeypatch.setenv("ALLOW_TEXT_UPLOAD", "1")
     return tmp_path
 
 
@@ -127,6 +129,7 @@ def test_demo_happy_path(client, product_id, order_id, inspection_id):
     [line] = draft["lines"]
     assert line["read"] == {
         "name": "서울우유 1000ml",
+        "spec": None,
         "quantity": 10,
         "unit": "개",
         "unit_price": 2650,
@@ -203,10 +206,11 @@ def test_different_line_goes_to_owner_approval(
     assert draft["lines"][0]["match_status"] == "수량 다름"
     assert draft["all_match"] is False
 
+    # 예외 건은 예외 사유가 있어야 확정된다 (US-06)
     response = client.post(
         f"/inspections/{inspection_id}/confirm",
+        json={"exception_reason": "명세서와 실물 확인함"},
         headers=STAFF,
-        json={"reason": "차이 확인"},
     )
     assert response.json()["status"] == "사장 승인 대기"
     assert _stock(client, product_id) == 0
@@ -216,10 +220,11 @@ def test_different_line_goes_to_owner_approval(
 def test_price_difference_goes_to_owner_approval(client, product_id, inspection_id):
     _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,900원\n".encode())
     assert _get(client, inspection_id)["lines"][0]["match_status"] == "단가 다름"
+    # 예외 건은 예외 사유가 있어야 확정된다 (US-06)
     response = client.post(
         f"/inspections/{inspection_id}/confirm",
+        json={"exception_reason": "명세서와 실물 확인함"},
         headers=STAFF,
-        json={"reason": "차이 확인"},
     )
     assert response.json()["status"] == "사장 승인 대기"
     assert _stock(client, product_id) == 0
@@ -306,7 +311,7 @@ def test_owner_approval_records_history_and_preserves_shortfall(
     _upload(client, inspection_id, "서울우유 1000ml 8개 × 2,900원\n".encode())
     response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
     assert response.status_code == 400
-    assert response.json()["error"]["code"] == "REASON_REQUIRED"
+    assert response.json()["error"]["code"] == "EXCEPTION_REASON_REQUIRED"
     response = client.post(
         f"/inspections/{inspection_id}/confirm",
         headers=STAFF,
@@ -326,8 +331,8 @@ def test_owner_approval_records_history_and_preserves_shortfall(
         == 400
     )
     history = client.get(f"/inspections/{inspection_id}/history", headers=OWNER).json()
-    assert {"판독 원본", "직원 확정", "재고 반영", "approve"} <= {
-        row["kind"] for row in history
+    assert {"판독", "확정", "재고 반영", "승인"} <= {
+        row["action"] for row in history["changes"]
     }
     logs = client.get(
         f"/inspections/{inspection_id}/reading-logs", headers=OWNER
@@ -421,7 +426,8 @@ def test_exception_photos_are_store_scoped(client, inspection_id):
         headers=STAFF,
         files={"file": ("photo.png", b"example", "image/png")},
     )
-    photo_id = response.json()["id"]
+    [photo] = response.json()["exception_photos"]
+    photo_id = photo["id"]
     assert (
         client.get(
             f"/inspections/{inspection_id}/exception-photos/{photo_id}", headers=OWNER
@@ -450,9 +456,14 @@ def test_openai_structurer_sends_masked_text_and_records_usage(
         def parse(self, **kwargs):
             seen.append(kwargs)
             parsed = kwargs["text_format"](
+                document_date=None,
+                total_amount=26500,
+                uncertain_fields=[],
                 lines=[
                     {
                         "name": "서울우유 1000ml",
+                        "spec": None,
+                        "uncertain_fields": [],
                         "quantity": 10,
                         "unit": "개",
                         "unit_price": 2650,
@@ -556,8 +567,10 @@ def test_openai_sdk_structured_response(monkeypatch):
                             {
                                 "type": "output_text",
                                 "text": (
-                                    '{"lines":[{"name":"우유","quantity":2,'
-                                    '"unit":"개","unit_price":10,"amount":20}]}'
+                                    '{"document_date":null,"total_amount":null,"uncertain_fields":[],'
+                                    '"lines":[{"name":"우유","quantity":2,"spec":null,'
+                                    '"unit":"개","unit_price":10,"amount":20,'
+                                    '"uncertain_fields":[]}]}'
                                 ),
                                 "annotations": [],
                             }
@@ -578,6 +591,6 @@ def test_openai_sdk_structured_response(monkeypatch):
             **kwargs,
         ),
     )
-    result = OpenAIStructurer().structure("우유 2개", [])
-    assert result[0].quantity == 2
+    result = OpenAIStructurer().structure("우유 2개 × 10원 = 20원", [])
+    assert result.lines[0].quantity == 2
     assert b'"store":false' in requests[0].content
