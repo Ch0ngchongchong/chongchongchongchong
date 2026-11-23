@@ -37,6 +37,18 @@ def get_current_user(
     return user
 
 
+def forbidden_unless_role(
+    user: StoreUser, *roles: str, message: str = "이 작업을 할 권한이 없습니다"
+) -> JSONResponse | None:
+    """user.role이 roles에 없으면 공통 403 오류를 돌려준다.
+    purchase_orders·inspections 라우터가 흩어져 쓰던 역할 검사를 한 곳으로 모은 것.
+    오류 코드는 FORBIDDEN_ROLE로 통일한다
+    (기존에는 FORBIDDEN_ROLE·FORBIDDEN이 섞여 있었음)."""
+    if user.role not in roles:
+        return error_response(403, "FORBIDDEN_ROLE", message)
+    return None
+
+
 @router.post("", response_model=ProductOut)
 def create_product(
     body: ProductCreate,
