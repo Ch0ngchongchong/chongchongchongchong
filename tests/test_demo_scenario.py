@@ -8,6 +8,7 @@ import pytest
 OWNER = {"X-User-Id": "1"}
 STAFF = {"X-User-Id": "2"}
 OTHER_STORE_OWNER = {"X-User-Id": "3"}
+OTHER_STAFF = {"X-User-Id": "4"}  # store 1의 또 다른 직원 (담당 아님)
 
 SEOUL_MILK = {
     "product_code": "P-0123",
@@ -258,6 +259,34 @@ def test_other_store_cannot_see_or_touch_inspection(client, inspection_id):
     )
     assert response.status_code == 404
     assert _get(client, inspection_id)["status"] == "업로드 대기"
+
+
+# 2026-11-16 멘토 데모 피드백 팀 결정: "직원은 담당(처음 올린) 입고 건만 다룰 수 있다"
+def test_other_staff_cannot_touch_assigned_inspection(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode(), headers=STAFF)
+    response = client.patch(
+        f"/inspections/{inspection_id}/lines/1", json={}, headers=OTHER_STAFF
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    response = client.post(
+        f"/inspections/{inspection_id}/confirm", headers=OTHER_STAFF
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    # 담당 직원은 그대로 확정할 수 있다
+    assert (
+        client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF).status_code
+        == 200
+    )
+
+
+def test_owner_can_touch_any_staffs_inspection(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode(), headers=STAFF)
+    assert (
+        client.post(f"/inspections/{inspection_id}/confirm", headers=OWNER).status_code
+        == 200
+    )
 
 
 # ---------- 직원 확인 ----------

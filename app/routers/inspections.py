@@ -84,6 +84,22 @@ def _invalid_status(inspection: Inspection):
     )
 
 
+def _forbidden_unless_assigned(user: StoreUser, inspection: Inspection):
+    """사장님은 모든 검수 건을 다룰 수 있다. 직원은 담당(처음 명세서를 올린)
+    검수 건만 다룰 수 있다 (2026-11-16 멘토 데모 피드백 팀 결정).
+    담당자가 아직 없으면(사장님이 올렸거나 업로드 전) 막지 않는다."""
+    if user.role == "사장님":
+        return None
+    if (
+        inspection.assigned_employee_id is not None
+        and inspection.assigned_employee_id != user.id
+    ):
+        return error_response(
+            403, "FORBIDDEN_ROLE", "다른 직원이 담당하는 입고 건입니다"
+        )
+    return None
+
+
 def _to_out(db: Session, inspection: Inspection) -> dict:
     document = latest_document(db, inspection.id)
     evaluation = evaluate(db, inspection)
@@ -202,6 +218,8 @@ def upload_document(
     inspection = _find(db, inspection_id, user, lock=True)
     if inspection is None:
         return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
     if inspection.status != INSPECTION_STATUS_UPLOAD_WAITING:
         return _invalid_status(inspection)
 
@@ -231,6 +249,8 @@ def upload_document(
     db.add(document)
     db.flush()
     db.add(DocumentContent(document_id=document.id, data=data))
+    if inspection.assigned_employee_id is None and user.role == "직원":
+        inspection.assigned_employee_id = user.id
     inspection.status = INSPECTION_READING
     db.commit()
     db.refresh(inspection)
@@ -252,6 +272,8 @@ def update_line(
     inspection = _find(db, inspection_id, user, lock=True)
     if inspection is None:
         return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
     if inspection.status != INSPECTION_STAFF_REVIEW:
         return _invalid_status(inspection)
     line = db.scalar(
@@ -308,6 +330,8 @@ def confirm_inspection(
     inspection = _find(db, inspection_id, user, lock=True)
     if inspection is None:
         return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
     if inspection.status != INSPECTION_STAFF_REVIEW:
         return _invalid_status(inspection)
 
@@ -429,6 +453,8 @@ def upload_exception_photo(
     inspection = _find(db, inspection_id, user, lock=True)
     if inspection is None:
         return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
     if inspection.status != INSPECTION_STAFF_REVIEW:
         return _invalid_status(inspection)
     content_type = (file.content_type or "").lower()
@@ -538,6 +564,8 @@ def owner_action(
         return error_response(404, "NOT_FOUND", "요청한 작업을 찾을 수 없습니다")
     before, after, role = transitions[action]
     if (denied := forbidden_unless_role(user, role)) is not None:
+        return denied
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
         return denied
     if inspection.status != before:
         return _invalid_status(inspection)

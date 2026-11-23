@@ -20,3 +20,10 @@ class Inspection(Base):
         ForeignKey("purchase_orders.id"), nullable=False, index=True
     )
     status: Mapped[str] = mapped_column(String, nullable=False)
+    # 담당 직원 (2026-11-16 멘토 데모 피드백 팀 결정: "직원은 담당 입고 건만
+    # 수정 가능"). 처음 명세서를 올린 직원으로 정하고, 올리기 전에는 비어 있다.
+    # 사장님이 직접 올리면 담당자를 정하지 않는다(사장님은 모든 건을 다룰 수 있어서).
+    # backlog.md에는 아직 반영되지 않았다.
+    assigned_employee_id: Mapped[int | None] = mapped_column(
+        ForeignKey("store_users.id"), nullable=True
+    )
