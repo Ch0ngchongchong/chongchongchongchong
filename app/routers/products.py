@@ -114,7 +114,15 @@ def update_product(
     확정하는 건부터 새 값이 쓰인다. 이미 재고 반영 완료된 건의 수량·단가가 바뀌지
     않으려면, 입고 확정(US-04·US-06)을 만들 때 그때의 수량·단가를 검수 건 쪽에
     따로 저장해야 한다 (DATA-MODEL.md '직원 확정값을 어디에 저장할지' 미정).
-    직원도 수정할 수 있는지는 미정이라(backlog US-08) 역할로 막지 않는다."""
+    직원도 수정할 수 있는지는 backlog US-08엔 아직 미확정으로 남아 있지만,
+    2026-11-16 멘토 데모 피드백 자리에서 팀이 "상품 등은 사장님만"으로 답해
+    그 결정을 반영해 사장님만 수정할 수 있게 막는다. backlog.md에는 아직
+    반영되지 않았다."""
+    denied = forbidden_unless_role(
+        user, "사장님", message="사장님만 상품을 수정할 수 있습니다"
+    )
+    if denied is not None:
+        return denied
     # 다른 매장 상품은 없는 상품과 똑같이 다룬다 (US-08 권한).
     # 응답 코드는 API.md에 없어 [제안]으로 404 PRODUCT_NOT_FOUND를 쓴다.
     product = db.scalar(

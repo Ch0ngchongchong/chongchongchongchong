@@ -163,3 +163,17 @@ def test_us08_other_store_cannot_update_product(product_api, product):
         store=2, product_id=created["id"], changes={"base_unit_price": 1}
     )
     assert product_api.list_products(store=1) == [product]
+
+
+# 2026-11-16 멘토 데모 피드백 팀 답변("상품 등은 사장님만") 반영.
+# backlog US-08 '미확정'에는 아직 안 옮겨졌다.
+def test_us08_staff_cannot_update_product(product_api, product):
+    created = product_api.create(store=1, product=product)
+    response = product_api.client.patch(
+        f"/products/{created['id']}",
+        json={"base_unit_price": 1},
+        headers={"X-User-Id": "2"},  # store 1 직원 (conftest SEED_USERS)
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    assert product_api.list_products(store=1) == [product]
