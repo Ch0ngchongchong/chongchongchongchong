@@ -90,6 +90,15 @@ class InspectionLineUpdate(BaseModel):
     checked: bool | None = None
 
 
+class InspectionLineCreate(BaseModel):
+    """판독 결과에 없는 줄을 직원이 추가할 때 (US-04 인수 조건, 미팅1 질의 3).
+    OCR이 읽은 값이 없으니 품목은 직원이 직접 고른다."""
+
+    product_id: int
+    quantity: int
+    unit: str | None = None
+
+
 class InventoryOut(BaseModel):
     product_id: int
     product_code: str

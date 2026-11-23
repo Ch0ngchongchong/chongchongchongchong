@@ -293,12 +293,34 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
         .order_by(InspectionLine.line_no)
     ).all()
 
+    product_cache: dict[int, Product | None] = {}
+
+    def get_product(product_id: int | None) -> Product | None:
+        if product_id is None:
+            return None
+        if product_id not in product_cache:
+            product_cache[product_id] = db.get(Product, product_id)
+        return product_cache[product_id]
+
+    # 같은 상품이 한 명세서에 박스·낱개로 섞여 있으면 구분할 수 없으니
+    # 자동 환산하지 않고 '확인 필요'로 강조한다 (US-05, 미팅1 피드백 5, R6)
+    units_by_product: dict[int, set[str]] = {}
+    for line in lines:
+        product = get_product(line.product_id)
+        if product is None or not line.unit:
+            continue
+        if line.unit in {product.base_unit, product.pack_unit}:
+            units_by_product.setdefault(product.id, set()).add(line.unit)
+    mixed_unit_products = {
+        product_id for product_id, units in units_by_product.items() if len(units) > 1
+    }
+
     # 같은 상품이 여러 줄에 나오면 합쳐서 발주 수량과 비교한다
     received: dict[int, int] = {}
     checks = []
     for line in lines:
         violations = _rule_violations(line)
-        product = db.get(Product, line.product_id) if line.product_id else None
+        product = get_product(line.product_id)
         if (
             product is None
             or line.quantity is None
@@ -310,6 +332,7 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
                 and line.unit != product.base_unit
                 and not product.conversion_qty
             )
+            or product.id in mixed_unit_products
         ):
             checks.append(
                 LineCheck(line, product, None, None, MATCH_NEEDS_CHECK, violations)

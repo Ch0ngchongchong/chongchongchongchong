@@ -236,6 +236,70 @@ def test_pack_unit_is_converted_to_base_unit(client, product_id, inspection_id):
     assert _stock(client, product_id) == 10
 
 
+def test_mixed_units_for_same_product_need_check(client, product_id, inspection_id):
+    # 같은 상품이 개·박스로 섞여 있으면 구분할 수 없어 자동 환산하지 않는다
+    # (US-05, 미팅1 피드백 5, R6)
+    statement = (
+        "서울우유 1000ml 5개 × 2,650원\n서울우유 1000ml 1박스 × 26,500원\n"
+    )
+    _upload(client, inspection_id, statement.encode())
+    draft = _get(client, inspection_id)
+    assert [line["match_status"] for line in draft["lines"]] == [
+        "확인 필요",
+        "확인 필요",
+    ]
+    assert draft["check_count"] == 2
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CHECK_REQUIRED"
+
+
+def test_add_line_for_missed_item_fixes_quantity_mismatch(
+    client, product_id, inspection_id
+):
+    # OCR이 품목 한 줄을 덜 읽어 수량이 모자라면, 직원이 빠진 줄을 추가해
+    # 발주와 맞출 수 있다 (US-04 인수 조건, 미팅1 질의 3)
+    _upload(client, inspection_id, "서울우유 1000ml 7개 × 2,650원\n".encode())
+    draft = _get(client, inspection_id)
+    assert len(draft["lines"]) == 1
+    assert draft["lines"][0]["match_status"] == "수량 다름"
+
+    response = client.post(
+        f"/inspections/{inspection_id}/lines",
+        json={"product_id": product_id, "quantity": 3, "unit": "개"},
+        headers=STAFF,
+    )
+    assert response.status_code == 200, response.text
+    lines = response.json()["lines"]
+    assert len(lines) == 2
+    assert [line["match_status"] for line in lines] == ["일치", "일치"]
+
+    history = client.get(f"/inspections/{inspection_id}/history", headers=OWNER).json()
+    assert any(h["kind"] == "직원이 추가한 줄" for h in history)
+
+    metrics = client.get(f"/inspections/{inspection_id}/metrics", headers=OWNER).json()
+    assert metrics["line_count"] == 2
+    assert metrics["added_line_ratio"] == 0.5
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 200, response.text
+    assert _stock(client, product_id) == 10
+
+
+def test_add_line_requires_assigned_employee_or_owner(
+    client, product_id, inspection_id
+):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode(), headers=STAFF)
+    response = client.post(
+        f"/inspections/{inspection_id}/lines",
+        json={"product_id": product_id, "quantity": 1, "unit": "개"},
+        headers=OTHER_STAFF,
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+
+
 def test_read_failure_returns_to_upload_waiting(client, product_id, inspection_id):
     _upload(client, inspection_id, "흐릿해서 읽을 수 없음".encode())
     inspection = _get(client, inspection_id)

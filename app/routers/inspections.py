@@ -39,7 +39,12 @@ from app.models.receiving import (
 )
 from app.models.user import StoreUser
 from app.routers.products import error_response, forbidden_unless_role, get_current_user
-from app.schemas.inspection import InspectionLineUpdate, InspectionOut, ReasonInput
+from app.schemas.inspection import (
+    InspectionLineCreate,
+    InspectionLineUpdate,
+    InspectionOut,
+    ReasonInput,
+)
 from app.services.reading import (
     apply_stock,
     evaluate,
@@ -263,6 +268,70 @@ def upload_document(
     db.refresh(inspection)
 
     background_tasks.add_task(run_reading, inspection.id)
+    return _to_out(db, inspection)
+
+
+@router.post("/{inspection_id}/lines", response_model=InspectionOut)
+def add_line(
+    inspection_id: int,
+    body: InspectionLineCreate,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """판독 결과에 없는 줄을 직원이 추가한다 (US-04 인수 조건, 미팅1 질의 3
+    줄 누락·피드백 8 행 누락률). OCR이 읽은 값이 없으니 read_* 는 비워 두고,
+    '판독 원본' 이력이 없는 줄로 남아 정확도 지표의 행 누락률에 그대로
+    잡힌다(PR #15 added_line_ratio)."""
+    inspection = _find(db, inspection_id, user, lock=True)
+    if inspection is None:
+        return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
+    if inspection.status != INSPECTION_STAFF_REVIEW:
+        return _invalid_status(inspection)
+    if body.quantity <= 0:
+        return error_response(400, "INVALID_QUANTITY", "수량은 1 이상이어야 합니다")
+    product = db.scalar(
+        select(Product).where(
+            Product.id == body.product_id, Product.store_id == user.store_id
+        )
+    )
+    if product is None:
+        return error_response(
+            400, "UNREGISTERED_PRODUCT", "등록되지 않은 상품이 있습니다"
+        )
+
+    existing_lines = db.scalars(
+        select(InspectionLine).where(InspectionLine.inspection_id == inspection.id)
+    ).all()
+    next_line_no = max((line.line_no for line in existing_lines), default=0) + 1
+
+    line = InspectionLine(
+        inspection_id=inspection.id,
+        line_no=next_line_no,
+        read_name=product.name or product.product_code,
+        product_id=product.id,
+        quantity=body.quantity,
+        unit=body.unit or product.base_unit,
+    )
+    db.add(line)
+    db.flush()
+    db.add(
+        ChangeHistory(
+            inspection_id=inspection.id,
+            changed_by=user.id,
+            kind="직원이 추가한 줄",
+            new_value={
+                "line_id": line.id,
+                "line_no": next_line_no,
+                "product_id": product.id,
+                "quantity": body.quantity,
+                "unit": line.unit,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(inspection)
     return _to_out(db, inspection)
 
 
