@@ -352,11 +352,7 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
             check.status = MATCH_NOT_IN_ORDER
         elif received[product.id] != ordered[product.id]:
             check.status = MATCH_QTY_DIFF
-        elif (
-            check.line.read_unit_price is not None
-            and product.base_unit_price is not None
-            and _base_unit_price(check.line, product) != product.base_unit_price
-        ):
+        elif _price_differs(check.line, product):
             check.status = MATCH_PRICE_DIFF
         else:
             check.status = MATCH_OK
@@ -401,6 +397,21 @@ def _base_unit_price(line: InspectionLine, product: Product) -> int:
     포장 단위 단가면 환산값으로 나눈다."""
     per_unit = to_base_quantity(1, line.unit, product)
     return line.read_unit_price // per_unit if per_unit else line.read_unit_price
+
+
+def _price_differs(line: InspectionLine, product: Product) -> bool:
+    """단가가 '다르다'(R8)고 볼지 판정한다.
+    product.price_alert_threshold_percent가 없으면 지금까지처럼 기준 단가와
+    조금이라도 다르면 다르다고 본다. 설정돼 있으면 기준 단가보다 그 비율
+    이상 '높을 때만' 다르다고 본다 — 더 싸게 들어온 건 경고하지 않는다
+    (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 상품마다 직접 설정)."""
+    if line.read_unit_price is None or product.base_unit_price is None:
+        return False
+    effective_price = _base_unit_price(line, product)
+    threshold = product.price_alert_threshold_percent
+    if threshold is None:
+        return effective_price != product.base_unit_price
+    return effective_price * 100 > product.base_unit_price * (100 + threshold)
 
 
 # ---------- 재고 반영 ----------

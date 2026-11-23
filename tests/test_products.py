@@ -66,6 +66,7 @@ def product():
         "pack_unit": "박스",
         "conversion_qty": 10,
         "base_unit_price": 2650,
+        "price_alert_threshold_percent": None,
     }
 
 
@@ -87,6 +88,29 @@ def test_us08_nonpositive_conversion_qty_is_rejected(product_api, product, quant
     before = product_api.list_products(store=1)
     product_api.create_rejected(store=1, product=product)
     assert product_api.list_products(store=1) == before
+
+
+# R8 경고 기준(price_alert_threshold_percent)은 음수면 저장되지 않는다
+# (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 상품마다 직접 설정)
+def test_us08_negative_price_alert_threshold_is_rejected(product_api, product):
+    product["price_alert_threshold_percent"] = -1
+    before = product_api.list_products(store=1)
+    response = product_api.create_rejected(store=1, product=product)
+    assert response.json()["error"]["code"] == "INVALID_PRICE_ALERT_THRESHOLD"
+    assert product_api.list_products(store=1) == before
+
+
+def test_us08_update_to_negative_price_alert_threshold_is_rejected(
+    product_api, product
+):
+    created = product_api.create(store=1, product=product)
+    response = product_api.update_rejected(
+        store=1,
+        product_id=created["id"],
+        changes={"price_alert_threshold_percent": -5},
+    )
+    assert response.json()["error"]["code"] == "INVALID_PRICE_ALERT_THRESHOLD"
+    assert product_api.list_products(store=1) == [product]
 
 
 def test_us08_other_store_cannot_view_product(product_api, product):

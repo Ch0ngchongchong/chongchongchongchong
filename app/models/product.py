@@ -26,3 +26,10 @@ class Product(Base):
     conversion_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 기준 단가 (원)
     base_unit_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # '평소보다 높은 단가' 판정 기준 (R8, 2026-11-16 멘토 데모 피드백 팀 결정:
+    # 비율을 하나로 정하지 않고 상품별로 사장님이 직접 설정한다). 몇 %까지
+    # 올라도 괜찮은지(0 이상). 비워 두면 기준 단가와 조금이라도 다르면 강조한다
+    # (지금까지의 동작 그대로). backlog.md US-06에는 아직 반영되지 않았다.
+    price_alert_threshold_percent: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )

@@ -226,6 +226,57 @@ def test_price_difference_goes_to_owner_approval(client, product_id, inspection_
     assert _stock(client, product_id) == 0
 
 
+# R8: price_alert_threshold_percent를 사장님이 설정하면, 그 비율 안에서는
+# 단가가 달라도 경고하지 않는다 (2026-11-16 멘토 데모 피드백 팀 결정)
+def test_price_within_threshold_does_not_need_owner_approval(
+    client, product_id, inspection_id
+):
+    client.patch(
+        f"/products/{product_id}",
+        json={"price_alert_threshold_percent": 10},
+        headers=OWNER,
+    )
+    # 기준 단가 2,650원보다 9.4% 높음 (10% 기준 안쪽)
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,900원\n".encode())
+    assert _get(client, inspection_id)["lines"][0]["match_status"] == "일치"
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.json()["status"] == "재고 반영 완료"
+    assert _stock(client, product_id) == 10
+
+
+def test_price_above_threshold_still_goes_to_owner_approval(
+    client, product_id, inspection_id
+):
+    client.patch(
+        f"/products/{product_id}",
+        json={"price_alert_threshold_percent": 10},
+        headers=OWNER,
+    )
+    # 기준 단가 2,650원보다 13.2% 높음 (10% 기준 초과)
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 3,000원\n".encode())
+    assert _get(client, inspection_id)["lines"][0]["match_status"] == "단가 다름"
+    response = client.post(
+        f"/inspections/{inspection_id}/confirm",
+        headers=STAFF,
+        json={"reason": "단가 차이 확인"},
+    )
+    assert response.json()["status"] == "사장 승인 대기"
+    assert _stock(client, product_id) == 0
+
+
+def test_lower_price_with_threshold_is_not_flagged(client, product_id, inspection_id):
+    # 기준 단가보다 낮게 들어온 건 경고하지 않는다 (더 싸게 들어온 것)
+    client.patch(
+        f"/products/{product_id}",
+        json={"price_alert_threshold_percent": 10},
+        headers=OWNER,
+    )
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,000원\n".encode())
+    assert _get(client, inspection_id)["lines"][0]["match_status"] == "일치"
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.json()["status"] == "재고 반영 완료"
+
+
 def test_pack_unit_is_converted_to_base_unit(client, product_id, inspection_id):
     # 1박스 = 10개 (환산값). 박스 단가 26,500원 = 개당 2,650원
     _upload(client, inspection_id, "서울우유 1000ml 1박스 × 26,500원\n".encode())

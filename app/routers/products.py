@@ -61,6 +61,17 @@ def create_product(
             400, "INVALID_CONVERSION_QTY", "환산값은 0보다 커야 합니다"
         )
 
+    # R8 경고 기준은 0 이상이어야 한다 (2026-11-16 멘토 피드백 팀 결정)
+    if (
+        body.price_alert_threshold_percent is not None
+        and body.price_alert_threshold_percent < 0
+    ):
+        return error_response(
+            400,
+            "INVALID_PRICE_ALERT_THRESHOLD",
+            "단가 경고 기준은 0 이상이어야 합니다",
+        )
+
     # ① 같은 매장에 상품 코드가 이미 있으면 저장하지 않는다 (US-08)
     exists = db.scalar(
         select(Product.id).where(
@@ -140,6 +151,15 @@ def update_product(
     if conversion_qty is not None and conversion_qty <= 0:
         return error_response(
             400, "INVALID_CONVERSION_QTY", "환산값은 0보다 커야 합니다"
+        )
+
+    # R8 경고 기준은 0 이상이어야 한다
+    threshold = changes.get("price_alert_threshold_percent")
+    if threshold is not None and threshold < 0:
+        return error_response(
+            400,
+            "INVALID_PRICE_ALERT_THRESHOLD",
+            "단가 경고 기준은 0 이상이어야 합니다",
         )
 
     # ① 바꾸려는 상품 코드가 같은 매장의 다른 상품에 있으면 저장하지 않는다 (US-08)
