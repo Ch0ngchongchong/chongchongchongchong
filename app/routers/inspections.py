@@ -36,7 +36,7 @@ from app.models.receiving import (
     InspectionLine,
 )
 from app.models.user import StoreUser
-from app.routers.products import error_response, get_current_user
+from app.routers.products import error_response, forbidden_unless_role, get_current_user
 from app.schemas.inspection import InspectionLineUpdate, InspectionOut, ReasonInput
 from app.services.reading import (
     apply_stock,
@@ -364,8 +364,11 @@ def inspection_history(
 ):
     if _find(db, inspection_id, user) is None:
         return _not_found()
-    if user.role != "사장님":
-        return error_response(403, "FORBIDDEN", "사장님만 조회할 수 있습니다")
+    denied = forbidden_unless_role(
+        user, "사장님", message="사장님만 조회할 수 있습니다"
+    )
+    if denied is not None:
+        return denied
     rows = db.scalars(
         select(ChangeHistory)
         .where(ChangeHistory.inspection_id == inspection_id)
@@ -392,8 +395,11 @@ def reading_logs(
 ):
     if _find(db, inspection_id, user) is None:
         return _not_found()
-    if user.role != "사장님":
-        return error_response(403, "FORBIDDEN", "사장님만 조회할 수 있습니다")
+    denied = forbidden_unless_role(
+        user, "사장님", message="사장님만 조회할 수 있습니다"
+    )
+    if denied is not None:
+        return denied
     rows = db.scalars(
         select(ReadingLog)
         .where(ReadingLog.inspection_id == inspection_id)
@@ -531,8 +537,8 @@ def owner_action(
     if action not in transitions:
         return error_response(404, "NOT_FOUND", "요청한 작업을 찾을 수 없습니다")
     before, after, role = transitions[action]
-    if user.role != role:
-        return error_response(403, "FORBIDDEN", "이 작업을 할 권한이 없습니다")
+    if (denied := forbidden_unless_role(user, role)) is not None:
+        return denied
     if inspection.status != before:
         return _invalid_status(inspection)
     if action == "reject" and (body is None or not body.reason.strip()):

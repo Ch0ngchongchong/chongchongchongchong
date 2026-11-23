@@ -21,7 +21,7 @@ from app.models.purchase_order import (
     PurchaseOrderLine,
 )
 from app.models.user import StoreUser
-from app.routers.products import error_response, get_current_user
+from app.routers.products import error_response, forbidden_unless_role, get_current_user
 from app.schemas.purchase_order import PurchaseOrderCreate, PurchaseOrderOut
 from app.services.reading import remaining_quantities
 
@@ -32,9 +32,7 @@ OWNER = "사장님"  # DATA-MODEL.md 매장 사용자 role
 
 def _forbidden_unless_owner(user: StoreUser):
     # 직원은 발주를 승인·전달 완료·취소할 수 없다 (US-01·US-02 권한)
-    if user.role != OWNER:
-        return error_response(403, "FORBIDDEN_ROLE", "사장님만 할 수 있습니다")
-    return None
+    return forbidden_unless_role(user, OWNER, message="사장님만 할 수 있습니다")
 
 
 def _find_order(db: Session, order_id: int, user: StoreUser) -> PurchaseOrder | None:
