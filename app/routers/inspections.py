@@ -14,17 +14,18 @@
 # 승인·반려·검수 종료는 사장님만. 업로드·수정·확정·확정 취소·재검수를 직원만 할 수
 # 있는지는 정하지 않아 역할로 막지 않는다.
 
+import json
 import os
-import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_db
+from app.models.audit import ChangeHistory, DocumentContent, ExceptionPhoto
 from app.models.history import ChangeLog, ReadingLog
 from app.models.inspection import Inspection
 from app.models.product import Product
@@ -45,7 +46,7 @@ from app.models.receiving import (
     InspectionLine,
 )
 from app.models.user import StoreUser
-from app.routers.products import error_response, get_current_user
+from app.routers.products import error_response, forbidden_unless_role, get_current_user
 from app.routers.purchase_orders import OWNER
 from app.schemas.inspection import (
     ConfirmRequest,
@@ -71,6 +72,10 @@ PHOTO_TYPES = {"image/jpeg", "image/png", "image/heic"}
 # 명세서는 사진·PDF만 (US-03 실패·거절)
 STATEMENT_TYPES = PHOTO_TYPES | {"application/pdf"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # [제안] 10MB
+FILE_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Cache-Control": "private, no-store",
+}
 
 
 def _statement_types() -> set[str]:
@@ -79,11 +84,6 @@ def _statement_types() -> set[str]:
     if os.environ.get("ALLOW_TEXT_UPLOAD") == "1":
         return STATEMENT_TYPES | {"text/plain"}
     return STATEMENT_TYPES
-
-
-def _upload_dir() -> Path:
-    # 원본 파일을 저장할 곳. 환경변수 UPLOAD_DIR, 없으면 ./uploads
-    return Path(os.environ.get("UPLOAD_DIR", "uploads"))
 
 
 # ---------- 공통 ----------
@@ -116,10 +116,7 @@ def _invalid_status(inspection: Inspection):
 
 
 def _owner_only(user: StoreUser):
-    # 예외 건 승인·반려·검수 종료는 사장님만 (US-06 권한)
-    if user.role != OWNER:
-        return error_response(403, "FORBIDDEN_ROLE", "사장님만 할 수 있습니다")
-    return None
+    return forbidden_unless_role(user, OWNER, message="사장님만 할 수 있습니다")
 
 
 def _blank(value: str | None) -> bool:
@@ -187,6 +184,22 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
         .order_by(InspectionFile.id)
     ).all()
     detail = db.get(InspectionDetail, inspection.id)
+    exception_reason = detail.exception_reason if detail else None
+    reject_reason = detail.reject_reason if detail else None
+    if exception_reason is None or reject_reason is None:
+        for old in db.scalars(
+            select(ChangeHistory)
+            .where(
+                ChangeHistory.inspection_id == inspection.id,
+                ChangeHistory.kind.in_(("직원 확정", "reject")),
+            )
+            .order_by(ChangeHistory.id.desc())
+        ):
+            reason = (old.new_value or {}).get("reason")
+            if old.kind == "직원 확정" and exception_reason is None:
+                exception_reason = reason
+            if old.kind == "reject" and reject_reason is None:
+                reject_reason = reason
     evaluation = evaluate(db, inspection)
     summary = None
     if detail is not None and evaluation.lines:
@@ -214,8 +227,8 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
         "check_count": evaluation.check_count,
         "exception_types": evaluation.exception_types,
         "all_match": evaluation.all_match,
-        "exception_reason": detail.exception_reason if detail else None,
-        "reject_reason": detail.reject_reason if detail else None,
+        "exception_reason": exception_reason,
+        "reject_reason": reject_reason,
     }
 
 
@@ -235,21 +248,18 @@ def _read_upload(file: UploadFile, allowed: set[str], type_message: str):
 
 
 def _save_file(db, inspection, user, kind, file, content_type, data) -> InspectionFile:
-    folder = _upload_dir() / str(inspection.id)
-    folder.mkdir(parents=True, exist_ok=True)
-    path = folder / f"{uuid.uuid4().hex}{Path(file.filename or '').suffix.lower()}"
-    path.write_bytes(data)
     saved = InspectionFile(
         inspection_id=inspection.id,
         kind=kind,
         uploaded_by=user.id,
-        filename=file.filename or path.name,
+        filename=file.filename or "document",
         content_type=content_type,
-        stored_path=str(path),
+        stored_path="database",
         uploaded_at=datetime.now(UTC),
     )
     db.add(saved)
     db.flush()
+    db.add(DocumentContent(document_id=saved.id, data=data))
     return saved
 
 
@@ -352,49 +362,116 @@ def get_history(
     user: StoreUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """변경 이력(시간순)과 판독 로그 (US-07). 이력을 고치거나 지우는 API는 없다.
-    열람 범위가 미정이라 역할로 막지 않는다."""
+    """사장님이 변경 이력(시간순)과 판독 로그를 조회한다 (US-07)."""
     inspection = _find(db, inspection_id, user)
     if inspection is None:
         return _not_found()
+    if (denied := _owner_only(user)) is not None:
+        return denied
     changes = db.scalars(
-        select(ChangeLog)
-        .where(ChangeLog.inspection_id == inspection.id)
-        .order_by(ChangeLog.changed_at, ChangeLog.id)
-    ).all()
+        select(ChangeLog).where(ChangeLog.inspection_id == inspection.id)
+    )
     logs = db.scalars(
         select(ReadingLog)
         .where(ReadingLog.inspection_id == inspection.id)
         .order_by(ReadingLog.id)
     ).all()
+    entries = [
+        {
+            "id": c.id,
+            "changed_by": c.changed_by,
+            "changed_at": c.changed_at,
+            "action": c.action,
+            "field": c.field,
+            "old_value": c.old_value,
+            "new_value": c.new_value,
+        }
+        for c in changes
+    ]
+    legacy_changes = db.scalars(
+        select(ChangeHistory).where(ChangeHistory.inspection_id == inspection.id)
+    )
+    # 기존 이력과 새 이력은 서로 다른 시퀀스를 사용한다.
+    entries.extend(
+        {
+            "id": -row.id,
+            "changed_by": row.changed_by,
+            "changed_at": row.changed_at,
+            "action": row.kind,
+            "field": None,
+            "old_value": (
+                json.dumps(row.old_value, ensure_ascii=False)
+                if row.old_value is not None else None
+            ),
+            "new_value": (
+                json.dumps(row.new_value, ensure_ascii=False)
+                if row.new_value is not None else None
+            ),
+        }
+        for row in legacy_changes
+    )
+    entries.sort(key=lambda entry: (entry["changed_at"], abs(entry["id"])))
     return {
         "inspection_id": inspection.id,
-        "changes": [
-            {
-                "id": c.id,
-                "changed_by": c.changed_by,
-                "changed_at": c.changed_at,
-                "action": c.action,
-                "field": c.field,
-                "old_value": c.old_value,
-                "new_value": c.new_value,
-            }
-            for c in changes
-        ],
+        "changes": entries,
         "reading_logs": [
             {
                 "id": r.id,
                 "file_id": r.file_id,
-                "succeeded": r.succeeded,
-                "input_tokens": r.input_tokens,
-                "output_tokens": r.output_tokens,
-                "cost": r.cost,
+                "succeeded": r.outcome == "성공",
+                "input_tokens": r.input_tokens or 0,
+                "output_tokens": r.output_tokens or 0,
+                "cost": r.cost or 0.0,
                 "elapsed_seconds": r.elapsed_seconds,
                 "created_at": r.created_at,
             }
             for r in logs
         ],
     }
+
+
+@router.get("/{inspection_id}/reading-logs")
+def reading_logs(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if _find(db, inspection_id, user) is None:
+        return _not_found()
+    if (denied := _owner_only(user)) is not None:
+        return denied
+    logs = db.scalars(
+        select(ReadingLog).where(ReadingLog.inspection_id == inspection_id)
+        .order_by(ReadingLog.id)
+    )
+    return [
+        {
+            "id": log.id,
+            "document_id": log.file_id,
+            "input_tokens": log.input_tokens,
+            "output_tokens": log.output_tokens,
+            "cost": log.cost,
+            "elapsed_seconds": log.elapsed_seconds,
+            "outcome": log.outcome,
+        }
+        for log in logs
+    ]
+
+
+def _file_response(db: Session, file: InspectionFile):
+    content = db.get(DocumentContent, file.id)
+    if content is not None:
+        return Response(
+            content.data, media_type=file.content_type, headers=FILE_HEADERS
+        )
+    if Path(file.stored_path).is_file():
+        return FileResponse(
+            file.stored_path,
+            media_type=file.content_type,
+            filename=file.filename,
+            headers=FILE_HEADERS,
+        )
+    return error_response(404, "FILE_NOT_FOUND", "파일을 찾을 수 없습니다")
 
 
 @router.get("/{inspection_id}/files/{file_id}")
@@ -413,11 +490,9 @@ def download_file(
             InspectionFile.id == file_id, InspectionFile.inspection_id == inspection.id
         )
     )
-    if file is None or not Path(file.stored_path).exists():
+    if file is None:
         return error_response(404, "FILE_NOT_FOUND", "파일을 찾을 수 없습니다")
-    return FileResponse(
-        file.stored_path, media_type=file.content_type, filename=file.filename
-    )
+    return _file_response(db, file)
 
 
 # ---------- US-03 업로드 ----------
@@ -577,6 +652,62 @@ def upload_exception_photo(
     return _done(db, inspection)
 
 
+@router.get("/{inspection_id}/exception-photos")
+def list_exception_photos(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if _find(db, inspection_id, user) is None:
+        return _not_found()
+    photos = db.scalars(
+        select(InspectionFile)
+        .where(
+            InspectionFile.inspection_id == inspection_id,
+            InspectionFile.kind == FILE_EXCEPTION_PHOTO,
+        )
+        .order_by(InspectionFile.id)
+    )
+    old_photos = db.execute(
+        select(
+            ExceptionPhoto.id,
+            ExceptionPhoto.filename,
+            ExceptionPhoto.content_type,
+            ExceptionPhoto.uploaded_at,
+        ).where(ExceptionPhoto.inspection_id == inspection_id)
+    )
+    return sorted(
+        [_file_out(photo) for photo in (*old_photos, *photos)],
+        key=lambda photo: photo["id"],
+    )
+
+
+@router.get("/{inspection_id}/exception-photos/{photo_id}")
+def get_exception_photo(
+    inspection_id: int,
+    photo_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if _find(db, inspection_id, user) is None:
+        return _not_found()
+    photo = db.scalar(
+        select(InspectionFile).where(
+            InspectionFile.id == photo_id,
+            InspectionFile.inspection_id == inspection_id,
+            InspectionFile.kind == FILE_EXCEPTION_PHOTO,
+        )
+    )
+    if photo is not None:
+        return _file_response(db, photo)
+    old_photo = db.get(ExceptionPhoto, photo_id)
+    if old_photo is None or old_photo.inspection_id != inspection_id:
+        return error_response(404, "PHOTO_NOT_FOUND", "사진을 찾을 수 없습니다")
+    return Response(
+        old_photo.data, media_type=old_photo.content_type, headers=FILE_HEADERS
+    )
+
+
 @router.post("/{inspection_id}/confirm", response_model=InspectionOut)
 def confirm_inspection(
     inspection_id: int,
@@ -638,6 +769,7 @@ def confirm_inspection(
 
 
 @router.post("/{inspection_id}/cancel-confirm", response_model=InspectionOut)
+@router.post("/{inspection_id}/cancel-confirmation", response_model=InspectionOut)
 def cancel_confirm(
     inspection_id: int,
     user: StoreUser = Depends(get_current_user),
@@ -665,8 +797,8 @@ def approve_inspection(
 ):
     """사장님 승인: `사장 승인 대기` → `승인` → `재고 반영 완료` (US-06).
     `승인` 다음은 시스템이 바로 반영하므로 한 요청에서 두 단계를 처리한다.
-    직원이 확정한 수량·단가로 재고를 반영하고 발주는 `입고 완료`가 된다.
-    모자란 수량은 short_order_lines로 보인다 (발주 건에 남길 필드는 미정)."""
+    직원이 확정한 수량으로 재고를 반영한다. 발주는 전량 입고 후 완료된다.
+    모자란 수량은 short_order_lines로 보인다."""
     if (denied := _owner_only(user)) is not None:
         return denied
     inspection = _find(db, inspection_id, user, lock=True)
@@ -724,6 +856,7 @@ def reject_inspection(
 
 
 @router.post("/{inspection_id}/recheck", response_model=InspectionOut)
+@router.post("/{inspection_id}/reinspect", response_model=InspectionOut)
 def recheck_inspection(
     inspection_id: int,
     user: StoreUser = Depends(get_current_user),

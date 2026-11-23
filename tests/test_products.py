@@ -163,3 +163,18 @@ def test_us08_other_store_cannot_update_product(product_api, product):
         store=2, product_id=created["id"], changes={"base_unit_price": 1}
     )
     assert product_api.list_products(store=1) == [product]
+
+
+# US-08 — 매장 1이 아닌 매장에서 등록한 경우 (일부러 틀린 구현 시험에서 찾은 빈틈,
+# document 이슈 #139). 위 테스트는 모두 매장 1에서 등록해서, 등록할 때 사용자
+# 매장을 쓰지 않고 항상 매장 1에 저장하는 잘못을 잡지 못했다.
+# US-08 인수 조건 #1(정상): 저장하면 (그 매장의) 상품 목록에 추가된다
+def test_us08_product_created_in_store2_appears_in_store2_list(product_api, product):
+    product_api.create(store=2, product=product)
+    assert product in product_api.list_products(store=2)
+
+
+# US-08 인수 조건 #4(권한): 다른 매장 사용자는 이 매장의 상품 목록을 볼 수 없다
+def test_us08_store1_cannot_view_product_created_in_store2(product_api, product):
+    product_api.create(store=2, product=product)
+    assert product not in product_api.list_products(store=1)

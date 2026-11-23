@@ -3,7 +3,7 @@
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 
 
 class FileOut(BaseModel):
@@ -116,6 +116,7 @@ class InspectionLineUpdate(BaseModel):
 
     product_id: int | None = None
     quantity: int | None = None
+    unit: str | None = None
     manual_base_quantity: int | None = None
     damaged: bool | None = None
     checked: bool | None = None
@@ -129,11 +130,15 @@ class SummaryUpdate(BaseModel):
 
 class ConfirmRequest(BaseModel):
     # 예외 건이면 필수 (US-06). 일반 건이면 무시한다
-    exception_reason: str | None = None
+    exception_reason: str | None = Field(
+        default=None, validation_alias=AliasChoices("exception_reason", "reason")
+    )
 
 
 class RejectRequest(BaseModel):
-    reject_reason: str | None = None
+    reject_reason: str | None = Field(
+        default=None, validation_alias=AliasChoices("reject_reason", "reason")
+    )
 
 
 class InventoryOut(BaseModel):
@@ -146,7 +151,7 @@ class InventoryOut(BaseModel):
 
 class ChangeLogOut(BaseModel):
     id: int
-    changed_by: int
+    changed_by: int | None
     changed_at: datetime
     action: str
     field: str | None

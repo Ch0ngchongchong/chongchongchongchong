@@ -340,7 +340,7 @@ def test_us06_approve_applies_stock_and_leaves_short_quantity(
         }
     ]
     assert stock(client, product_id) == 8
-    assert order_status(client, order_id) == "입고 완료"
+    assert order_status(client, order_id) == "입고 대기"
 
 
 def test_us06_approved_price_is_statement_price(client, product_id, inspection_id):

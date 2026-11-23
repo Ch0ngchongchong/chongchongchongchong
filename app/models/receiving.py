@@ -73,7 +73,7 @@ class InspectionFile(Base):
     """검수 건에 올린 파일.
     명세서는 다시 올리면 행이 하나 더 생기고 가장 최근 것을 쓴다."""
 
-    __tablename__ = "inspection_files"
+    __tablename__ = "inspection_documents"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     inspection_id: Mapped[int] = mapped_column(

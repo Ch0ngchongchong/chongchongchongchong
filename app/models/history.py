@@ -10,7 +10,6 @@
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -68,13 +67,12 @@ class ReadingLog(Base):
         ForeignKey("inspections.id"), nullable=False, index=True
     )
     file_id: Mapped[int] = mapped_column(
-        ForeignKey("inspection_files.id"), nullable=False
+        "document_id", ForeignKey("inspection_documents.id"), nullable=False
     )
-    succeeded: Mapped[bool] = mapped_column(Boolean, nullable=False)
-    input_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    output_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    # 통화 단위 미정 (DATA-MODEL.md). 지금 정리기는 LLM을 부르지 않아 0이다
-    cost: Mapped[float] = mapped_column(Float, nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
     # 업로드부터 판독이 끝날 때(`직원 확인 대기` 또는 실패)까지 걸린 초
     elapsed_seconds: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

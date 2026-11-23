@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
+from sqlalchemy import text
 
 from app import models  # noqa: F401  create_all()이 테이블을 알도록 모델을 불러온다
 from app.db import Base, engine
@@ -22,8 +23,27 @@ from app.schemas.product import REQUIRED_PRODUCT_FIELDS
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # 테이블 생성: 오늘은 create_all()로 단순화 (Alembic 도입 여부는 팀 확인 필요)
-    Base.metadata.create_all(bind=engine)
+    with engine.begin() as connection:
+        Base.metadata.create_all(bind=connection)
+        # create_all은 이미 배포된 테이블에 새 열을 만들지 않는다.
+        connection.execute(text("""
+            ALTER TABLE inspection_documents
+                ADD COLUMN IF NOT EXISTS kind VARCHAR NOT NULL DEFAULT '명세서';
+            ALTER TABLE inspection_lines
+                ADD COLUMN IF NOT EXISTS read_spec VARCHAR,
+                ADD COLUMN IF NOT EXISTS uncertain_fields JSON NOT NULL DEFAULT '[]',
+                ADD COLUMN IF NOT EXISTS manual_base_quantity INTEGER,
+                ADD COLUMN IF NOT EXISTS damaged BOOLEAN NOT NULL DEFAULT false,
+                ADD COLUMN IF NOT EXISTS checked BOOLEAN NOT NULL DEFAULT false;
+            ALTER TABLE reading_logs
+                ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE
+                NOT NULL DEFAULT now();
+            SELECT setval(pg_get_serial_sequence('inspection_documents', 'id'), id)
+            FROM (SELECT max(id) AS id FROM exception_photos) AS legacy
+            WHERE id > coalesce(pg_sequence_last_value(
+                pg_get_serial_sequence('inspection_documents', 'id')::regclass
+            ), 0);
+        """))
     yield
 
 

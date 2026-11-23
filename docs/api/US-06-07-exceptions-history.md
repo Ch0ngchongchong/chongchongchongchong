@@ -18,7 +18,7 @@
 | `POST` | `/inspections/{inspection_id}/recheck` | 반려된 건을 직원이 다시 검수할 때 | `반려` → `직원 확인 대기` | 누구나 (역할 제한 미정) |
 | `POST` | `/inspections/{inspection_id}/close` | 공급처에 반품·정정을 요청하고 검수 건을 닫을 때 | `반려` → `검수 종료` (끝 상태) | **사장님만** |
 | `POST` | `/inspections` | `검수 종료` 뒤 다시 납품돼 같은 발주에 새 검수 건이 필요할 때 | (새로 만듦) → `업로드 대기` | 누구나 (역할 제한 미정) |
-| `GET` | `/inspections/{inspection_id}/history` | 검수 건의 변경 이력과 판독 로그를 볼 때 | 없음 | 누구나 (열람 범위 미정) |
+| `GET` | `/inspections/{inspection_id}/history` | 검수 건의 변경 이력과 판독 로그를 볼 때 | 없음 | 사장님 |
 | `GET` | `/notifications` | 내 알림(판독 실패 등)을 볼 때 | 없음 | 본인 |
 | `POST` | `/notifications/{notification_id}/read` | 알림을 읽음으로 표시할 때 | 없음 | 본인 |
 
@@ -203,7 +203,7 @@ X-User-Id: 2
 
 - **직원이 확정한 수량·단가로 재고를 반영한다.** 단가는 명세서 단가(기준 단위 1개당)이고, 읽지 못했으면 상품 기준 단가다. 반영한 수량·환산값·단가는 줄에 따로 저장된다
 - 상품의 기준 단가(`base_unit_price`)는 바꾸지 않는다 ('매입 단가'와 같은 값인지 미정)
-- 발주 건은 `입고 완료`가 된다. **모자란 수량은 `short_order_lines`로 보인다** (발주 건에 미입고로 남길 필드는 미정이라 저장하지 않고 계산해서 보여 준다)
+- 전량 입고되면 발주가 `입고 완료`로 바뀐다. **모자란 수량은 `short_order_lines`로 보이며** `입고 대기`에서 새 재납품 검수 건을 만들 수 있다
 - 발주에 없는 상품 줄도 승인하면 재고에 더해진다. 파손 줄은 직원이 확정한 수량(`base_quantity`) 그대로 더해진다
 
 ```http
@@ -225,7 +225,7 @@ X-User-Id: 1
 }
 ```
 
-이 뒤 `GET /inventory`의 P-0123 `quantity`는 `8`, `GET /purchase-orders/1`의 `status`는 `입고 완료`였다.
+이 뒤 `GET /inventory`의 P-0123 `quantity`는 `8`, `GET /purchase-orders/1`의 `status`는 `입고 대기`다.
 
 **실패** — 상태·재고 모두 그대로다
 
@@ -370,7 +370,7 @@ Content-Type: application/json
 입고 검수 건의 변경 이력을 시간순으로, 판독 로그를 판독 순서로 돌려준다 (US-07).
 
 - **기록된 이력은 누구도 고치거나 지울 수 없다.** 고치거나 지우는 API가 없고(`PATCH`·`DELETE`는 `405`), 서버 코드에서 고치거나 지우려 해도 오류가 난다
-- 열람 범위가 미정이라(backlog US-07) 지금은 같은 매장이면 누구나 볼 수 있다
+- 같은 매장의 사장님이 조회할 수 있다
 
 **이력이 남는 때**
 

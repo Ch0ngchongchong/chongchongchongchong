@@ -303,3 +303,294 @@ def test_cannot_upload_twice_while_reviewing(client, inspection_id):
     response = _upload(client, inspection_id, MATCHING_STATEMENT.encode())
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_STATUS_TRANSITION"
+
+
+def test_owner_approval_records_history_and_preserves_shortfall(
+    client, product_id, order_id, inspection_id
+):
+    _upload(client, inspection_id, "서울우유 1000ml 8개 × 2,900원\n".encode())
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "EXCEPTION_REASON_REQUIRED"
+    response = client.post(
+        f"/inspections/{inspection_id}/confirm",
+        headers=STAFF,
+        json={"reason": "수량 및 단가 차이"},
+    )
+    assert response.json()["exception_reason"] == "수량 및 단가 차이"
+    assert (
+        client.post(f"/inspections/{inspection_id}/approve", headers=STAFF).status_code
+        == 403
+    )
+    response = client.post(f"/inspections/{inspection_id}/approve", headers=OWNER)
+    assert response.json()["status"] == "재고 반영 완료"
+    assert _stock(client, product_id) == 8
+    assert _order_status(client, order_id) == "입고 대기"
+    assert (
+        client.post(f"/inspections/{inspection_id}/approve", headers=OWNER).status_code
+        == 400
+    )
+    history = client.get(f"/inspections/{inspection_id}/history", headers=OWNER).json()
+    assert {"판독", "확정", "재고 반영", "승인"} <= {
+        row["action"] for row in history["changes"]
+    }
+    logs = client.get(
+        f"/inspections/{inspection_id}/reading-logs", headers=OWNER
+    ).json()
+    assert len(logs) == 1 and logs[0]["outcome"] == "성공"
+    assert logs[0]["cost"] is None
+    assert (
+        client.get(
+            f"/inspections/{inspection_id}/history", headers=OTHER_STORE_OWNER
+        ).status_code
+        == 404
+    )
+
+
+def test_reject_requires_reason_and_can_reinspect(client, inspection_id):
+    _upload(client, inspection_id, "서울우유 1000ml 8개 × 2,650원\n".encode())
+    client.post(
+        f"/inspections/{inspection_id}/confirm",
+        headers=STAFF,
+        json={"reason": "수량 차이"},
+    )
+    assert (
+        client.post(f"/inspections/{inspection_id}/reject", headers=OWNER).status_code
+        == 400
+    )
+    response = client.post(
+        f"/inspections/{inspection_id}/reject", headers=OWNER, json={"reason": "재확인"}
+    )
+    assert response.json()["reject_reason"] == "재확인"
+    assert (
+        client.post(
+            f"/inspections/{inspection_id}/cancel-confirmation", headers=STAFF
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post(f"/inspections/{inspection_id}/reinspect", headers=STAFF).json()[
+            "status"
+        ]
+        == "직원 확인 대기"
+    )
+
+
+def test_reading_unexpected_error_allows_retry(client, inspection_id, monkeypatch):
+    from app.services import reading
+
+    def fail():
+        raise RuntimeError("engine unavailable")
+
+    monkeypatch.setattr(reading, "get_ocr_engine", fail)
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    assert _get(client, inspection_id)["status"] == "업로드 대기"
+    logs = client.get(
+        f"/inspections/{inspection_id}/reading-logs", headers=OWNER
+    ).json()
+    assert logs[0]["outcome"] == "실패"
+
+
+def test_redelivery_uses_remaining_quantity(
+    client, product_id, order_id, inspection_id
+):
+    _upload(client, inspection_id, "서울우유 1000ml 8개 × 2,650원\n".encode())
+    client.post(
+        f"/inspections/{inspection_id}/confirm", headers=STAFF, json={"reason": "부족"}
+    )
+    client.post(f"/inspections/{inspection_id}/approve", headers=OWNER)
+    assert client.get(
+        f"/purchase-orders/{order_id}/remaining", headers=OWNER
+    ).json() == [{"product_id": product_id, "remaining_quantity": 2}]
+    response = client.post(f"/purchase-orders/{order_id}/redeliveries", headers=STAFF)
+    new_id = response.json()["inspection_id"]
+    assert (
+        client.post(
+            f"/purchase-orders/{order_id}/redeliveries", headers=STAFF
+        ).status_code
+        == 400
+    )
+    _upload(client, new_id, "서울우유 1000ml 2개 × 2,650원\n".encode())
+    assert _get(client, new_id)["all_match"] is True
+    assert (
+        client.post(f"/inspections/{new_id}/confirm", headers=STAFF).status_code == 200
+    )
+    assert _stock(client, product_id) == 10
+    assert _order_status(client, order_id) == "입고 완료"
+
+
+def test_exception_photos_are_store_scoped(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    response = client.post(
+        f"/inspections/{inspection_id}/exception-photos",
+        headers=STAFF,
+        files={"file": ("photo.png", b"example", "image/png")},
+    )
+    [photo] = response.json()["exception_photos"]
+    photo_id = photo["id"]
+    assert (
+        client.get(
+            f"/inspections/{inspection_id}/exception-photos/{photo_id}", headers=OWNER
+        ).content
+        == b"example"
+    )
+    assert (
+        client.get(
+            f"/inspections/{inspection_id}/exception-photos/{photo_id}",
+            headers=OTHER_STORE_OWNER,
+        ).status_code
+        == 404
+    )
+
+
+def test_openai_structurer_sends_masked_text_and_records_usage(
+    monkeypatch, client, inspection_id
+):
+    from types import SimpleNamespace
+
+    import openai
+
+    seen = []
+
+    class FakeResponses:
+        def parse(self, **kwargs):
+            seen.append(kwargs)
+            parsed = kwargs["text_format"](
+                document_date=None,
+                total_amount=26500,
+                uncertain_fields=[],
+                lines=[
+                    {
+                        "name": "서울우유 1000ml",
+                        "spec": None,
+                        "uncertain_fields": [],
+                        "quantity": 10,
+                        "unit": "개",
+                        "unit_price": 2650,
+                        "amount": 26500,
+                    }
+                ]
+            )
+            return SimpleNamespace(
+                output_parsed=parsed,
+                usage=SimpleNamespace(input_tokens=100, output_tokens=20),
+            )
+
+    monkeypatch.setattr(
+        openai, "OpenAI", lambda **kwargs: SimpleNamespace(responses=FakeResponses())
+    )
+    monkeypatch.setenv("STRUCTURER", "openai")
+    monkeypatch.setenv("OPENAI_INPUT_USD_PER_MILLION", "1")
+    monkeypatch.setenv("OPENAI_OUTPUT_USD_PER_MILLION", "2")
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    assert _get(client, inspection_id)["status"] == "직원 확인 대기"
+    assert "홍길동" not in str(seen) and "010-0000-0000" not in str(seen)
+    assert seen[0]["store"] is False
+    log = client.get(
+        f"/inspections/{inspection_id}/reading-logs", headers=OWNER
+    ).json()[0]
+    assert (log["input_tokens"], log["output_tokens"]) == (100, 20)
+    assert log["cost"] == pytest.approx(0.00014)
+
+
+def test_unregistered_item_requires_product_registration_and_owner_approval(
+    client, product_id, inspection_id
+):
+    _upload(client, inspection_id, "새 원두 2개 × 3,000원\n".encode())
+    line = _get(client, inspection_id)["lines"][0]
+    assert (
+        client.post(
+            f"/inspections/{inspection_id}/confirm",
+            headers=STAFF,
+            json={"reason": "신규 상품"},
+        ).status_code
+        == 400
+    )
+    new_product = client.post(
+        "/products",
+        headers=OWNER,
+        json={
+            "product_code": "NEW",
+            "name": "새 원두",
+            "base_unit": "개",
+            "base_unit_price": 3000,
+        },
+    ).json()["id"]
+    response = client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        headers=STAFF,
+        json={"product_id": new_product},
+    )
+    assert response.json()["lines"][0]["match_status"] == "발주에 없음"
+    client.post(
+        f"/inspections/{inspection_id}/confirm",
+        headers=STAFF,
+        json={"reason": "신규 상품"},
+    )
+    assert _stock(client, new_product) == 0
+    assert (
+        client.post(f"/inspections/{inspection_id}/approve", headers=OWNER).status_code
+        == 200
+    )
+    assert _stock(client, new_product) == 2
+
+
+def test_openai_sdk_structured_response(monkeypatch):
+    import httpx
+    import openai
+
+    from app.services.structurer import OpenAIStructurer
+
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_test",
+                "object": "response",
+                "created_at": 0,
+                "model": "gpt-4o-mini",
+                "status": "completed",
+                "error": None,
+                "incomplete_details": None,
+                "instructions": None,
+                "metadata": {},
+                "output": [
+                    {
+                        "id": "msg_test",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": (
+                                    '{"document_date":null,"total_amount":null,"uncertain_fields":[],'
+                                    '"lines":[{"name":"우유","quantity":2,"spec":null,'
+                                    '"unit":"개","unit_price":10,"amount":20,'
+                                    '"uncertain_fields":[]}]}'
+                                ),
+                                "annotations": [],
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 10, "output_tokens": 20, "total_tokens": 30},
+            },
+        )
+
+    real_client = openai.OpenAI
+    monkeypatch.setattr(
+        openai,
+        "OpenAI",
+        lambda **kwargs: real_client(
+            api_key="test",
+            http_client=httpx.Client(transport=httpx.MockTransport(respond)),
+            **kwargs,
+        ),
+    )
+    result = OpenAIStructurer().structure("우유 2개 × 10원 = 20원", [])
+    assert result.lines[0].quantity == 2
+    assert b'"store":false' in requests[0].content

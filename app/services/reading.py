@@ -7,14 +7,17 @@
 # 이 파일의 판독 단계는 재고를 바꾸지 않는다. 재고는 apply_stock()에서만 바꾸고,
 # apply_stock()은 직원 확정(일반 건)과 사장 승인(예외 건) API에서만 부른다 (R3).
 
+import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
+from app.models.audit import DocumentContent
 from app.models.history import Notification, ReadingLog
 from app.models.inspection import Inspection
 from app.models.product import Product
@@ -55,6 +58,8 @@ CHECK_UNCERTAIN = "불확실한 값"
 CHECK_AMOUNT_RULE = "수량×단가≠금액"
 CHECK_TOTAL_RULE = "줄 금액 합≠합계"
 
+logger = logging.getLogger(__name__)
+
 
 def latest_statement(db: Session, inspection_id: int) -> InspectionFile | None:
     return db.scalar(
@@ -82,7 +87,7 @@ def get_detail(db: Session, inspection_id: int) -> InspectionDetail:
 def _elapsed(uploaded_at: datetime) -> float:
     if uploaded_at.tzinfo is None:
         uploaded_at = uploaded_at.replace(tzinfo=UTC)
-    return round((datetime.now(UTC) - uploaded_at).total_seconds(), 3)
+    return max(0.0, (datetime.now(UTC) - uploaded_at).total_seconds())
 
 
 def _reading_failed(db, inspection, document, actor, message):
@@ -97,10 +102,7 @@ def _reading_failed(db, inspection, document, actor, message):
         ReadingLog(
             inspection_id=inspection.id,
             file_id=document.id,
-            succeeded=False,
-            input_tokens=0,
-            output_tokens=0,
-            cost=0.0,
+            outcome="실패",
             elapsed_seconds=_elapsed(document.uploaded_at),
         )
     )
@@ -119,9 +121,15 @@ def run_reading(inspection_id: int) -> None:
         actor = document.uploaded_by
         order = db.get(PurchaseOrder, inspection.purchase_order_id)
         try:
-            text = get_ocr_engine().read_text(
-                Path(document.stored_path), document.content_type
-            )
+            ocr = get_ocr_engine()
+            content = db.get(DocumentContent, document.id)
+            if content is None:
+                text = ocr.read_text(Path(document.stored_path), document.content_type)
+            else:
+                with NamedTemporaryFile() as temporary:
+                    temporary.write(content.data)
+                    temporary.flush()
+                    text = ocr.read_text(Path(temporary.name), document.content_type)
             products = db.scalars(
                 select(Product).where(Product.store_id == order.store_id)
             ).all()
@@ -132,6 +140,13 @@ def run_reading(inspection_id: int) -> None:
         except OcrError as exc:
             _reading_failed(
                 db, inspection, document, actor, f"{exc}. 명세서를 다시 올려 주세요"
+            )
+            return
+        except Exception:
+            logger.exception("명세서 판독 실패")
+            _reading_failed(
+                db, inspection, document, actor,
+                "명세서를 판독하지 못했습니다. 명세서를 다시 올려 주세요",
             )
             return
 
@@ -213,7 +228,7 @@ def run_reading(inspection_id: int) -> None:
             ReadingLog(
                 inspection_id=inspection_id,
                 file_id=document.id,
-                succeeded=True,
+                outcome="성공",
                 input_tokens=draft.usage.input_tokens,
                 output_tokens=draft.usage.output_tokens,
                 cost=draft.usage.cost,
@@ -310,7 +325,7 @@ def _line_checks(line: InspectionLine, product: Product | None) -> list[str]:
     if product is None:
         checks.append(CHECK_NO_PRODUCT)
     if line.manual_base_quantity is None:
-        if line.quantity is None:
+        if line.quantity is None or line.quantity <= 0:
             checks.append(CHECK_NO_QUANTITY)
         elif product is not None and unit_factor(line.unit, product) is None:
             checks.append(CHECK_UNIT_UNKNOWN)
@@ -329,13 +344,37 @@ def _line_checks(line: InspectionLine, product: Product | None) -> list[str]:
     return checks
 
 
+def remaining_quantities(
+    db: Session, order: PurchaseOrder, *, before_inspection_id: int | None = None
+) -> dict[int, int]:
+    remaining: dict[int, int] = {}
+    for po_line in order.lines:
+        remaining[po_line.product_id] = (
+            remaining.get(po_line.product_id, 0) + po_line.quantity
+        )
+    query = (
+        select(InspectionLine.product_id, InspectionLine.applied_base_quantity)
+        .join(Inspection, Inspection.id == InspectionLine.inspection_id)
+        .where(
+            Inspection.purchase_order_id == order.id,
+            InspectionLine.applied_base_quantity.is_not(None),
+        )
+    )
+    if before_inspection_id is not None:
+        query = query.where(Inspection.id < before_inspection_id)
+    for product_id, quantity in db.execute(query):
+        if product_id in remaining:
+            remaining[product_id] = max(0, remaining[product_id] - quantity)
+    return remaining
+
+
 def evaluate(db: Session, inspection: Inspection) -> Evaluation:
     order = db.get(PurchaseOrder, inspection.purchase_order_id)
-    ordered: dict[int, int] = {}
-    for po_line in order.lines:
-        ordered[po_line.product_id] = (
-            ordered.get(po_line.product_id, 0) + po_line.quantity
-        )
+    ordered = {
+        product_id: quantity for product_id, quantity in remaining_quantities(
+            db, order, before_inspection_id=inspection.id
+        ).items() if quantity > 0
+    }
 
     lines = db.scalars(
         select(InspectionLine)
@@ -350,7 +389,9 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
         product = db.get(Product, line.product_id) if line.product_id else None
         base = None
         if product is not None:
-            if line.manual_base_quantity is not None:
+            if line.applied_base_quantity is not None:
+                base = line.applied_base_quantity
+            elif line.manual_base_quantity is not None:
                 base = line.manual_base_quantity
             elif line.quantity is not None:
                 factor = unit_factor(line.unit, product)
@@ -424,9 +465,15 @@ def apply_stock(
     """직원 확정(일반 건) 또는 사장 승인(예외 건) 뒤에만 부른다 (R3).
     커밋은 부른 쪽에서 한다. 줄마다 반영한 수량·환산값·단가를 남겨 두어,
     나중에 상품을 고쳐도 이 건의 값은 바뀌지 않는다 (US-08).
-    단가는 명세서 단가(기준 단위 1개당)를 쓰고, 읽지 못했으면 상품 기준 단가를 쓴다.
-    상품의 기준 단가(base_unit_price)는 바꾸지 않는다 (매입 단가와 같은 값인지 미정)."""
-    order = db.get(PurchaseOrder, inspection.purchase_order_id)
+    단가는 명세서 단가(기준 단위 1개당)를 쓰고, 읽지 못했으면 상품 기준 단가를 쓴다."""
+    order = db.get(PurchaseOrder, inspection.purchase_order_id, with_for_update=True)
+    db.scalars(
+        select(Product)
+        .where(Product.id.in_({check.product.id for check in evaluation.lines}))
+        .order_by(Product.id)
+        .with_for_update()
+    ).all()
+    stocks: dict[int, Inventory] = {}
     for check in evaluation.lines:
         product = check.product
         line = check.line
@@ -438,19 +485,22 @@ def apply_stock(
             else product.base_unit_price
         )
 
-        stock = db.scalar(
-            select(Inventory)
-            .where(
-                Inventory.store_id == order.store_id,
-                Inventory.product_id == product.id,
+        stock = stocks.get(product.id)
+        if stock is None:
+            stock = db.scalar(
+                select(Inventory)
+                .where(
+                    Inventory.store_id == order.store_id,
+                    Inventory.product_id == product.id,
+                )
+                .with_for_update()
             )
-            .with_for_update()
-        )
         if stock is None:
             stock = Inventory(
                 store_id=order.store_id, product_id=product.id, quantity=0
             )
             db.add(stock)
+        stocks[product.id] = stock
         before = stock.quantity
         stock.quantity = before + check.base_quantity
         history.record(
@@ -462,4 +512,6 @@ def apply_stock(
             before,
             stock.quantity,
         )
-    order.status = ORDER_RECEIVED
+    db.flush()
+    if not any(remaining_quantities(db, order).values()):
+        order.status = ORDER_RECEIVED
