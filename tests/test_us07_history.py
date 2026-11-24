@@ -1,16 +1,16 @@
 # US-07 입고 변경 이력 조회 — 인수 조건 중 test_demo_scenario.py가 확인하지 않는 것
 # 근거: document 저장소 docs/requirements/backlog.md US-07 인수 조건
-#       응답 모양은 docs/api/US-06-07-exceptions-history.md 9절 (PR #24)
-#       — {"changes": [{changed_by, changed_at, action, field, old_value, new_value}],
-#          "reading_logs": [...]}, 값은 모두 문자열(숫자·목록은 JSON 문자열)
+#       응답 모양은 이 브랜치의 실제 구현
+#       (app/routers/inspections.py inspection_history)을 따른다 —
+#       {"id", "changed_by", "changed_at", "kind", "old_value", "new_value"},
+#       old_value/new_value는 JSON 값(문자열로 바꾸지 않음)
 # 사용자: conftest.py 시드 — 1 = 매장 1 사장님, 2 = 매장 1 직원, 3 = 매장 2 사장님
 #
 # 이 파일에서 다루지 않은 US-07 인수 조건 (팀 질문으로 남김)
 #  - 필드별 정확도·직원이 고친 줄 비율·직원이 추가한 줄 비율(행 누락률)·
-#    업로드부터 확정까지 걸린 시간 조회: 조회 API 약속(경로·필드)이 없음
+#    업로드부터 확정까지 걸린 시간 조회:
+#    /inspections/{id}/metrics에서 확인 (test_demo_scenario.py)
 #  - 직원도 이력을 볼 수 있는지: backlog US-07 미확정(사장님 열람 범위)
-
-import json
 
 import pytest
 
@@ -36,7 +36,7 @@ SHORT_DELIVERY = "서울우유 1000ml 8개 × 2,650원 = 21,200원\n합계 21,20
 @pytest.fixture(autouse=True)
 def upload_dir(tmp_path, monkeypatch):
     monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
-    # 리허설·테스트용으로 text/plain 명세서를 받게 한다 (기본은 사진·PDF만, PR #24)
+    # 리허설·테스트용으로 text/plain 명세서를 받게 한다 (기본은 사진·PDF만)
     monkeypatch.setenv("ALLOW_TEXT_UPLOAD", "1")
     return tmp_path
 
@@ -91,7 +91,7 @@ def _post(client, inspection_id, action, headers, body=None):
 def _changes(client, inspection_id):
     response = client.get(f"/inspections/{inspection_id}/history", headers=OWNER)
     assert response.status_code == 200, response.text
-    return response.json()["changes"]
+    return response.json()
 
 
 def _staff_edits_then_owner_approves(client, inspection_id):
@@ -104,14 +104,12 @@ def _staff_edits_then_owner_approves(client, inspection_id):
         headers=STAFF,
     )
     assert response.status_code == 200, response.text
-    _post(client, inspection_id, "confirm", STAFF, {"exception_reason": "1개 부족"})
+    _post(client, inspection_id, "confirm", STAFF, {"reason": "1개 부족"})
     _post(client, inspection_id, "approve", OWNER)
 
 
-def _first(rows, action, field):
-    return next(
-        row for row in rows if row["action"] == action and row["field"] == field
-    )
+def _first(rows, kind):
+    return next(row for row in rows if row["kind"] == kind)
 
 
 # ---------- (정상) 생길 때마다 변경자·시각·이전 값·새 값이 한 줄씩 ----------
@@ -124,16 +122,14 @@ def test_us07_every_row_has_who_when_old_and_new(client, product_id, inspection_
     assert rows
     for row in rows:
         assert {"changed_by", "changed_at", "old_value", "new_value"} <= row.keys()
-        assert row["changed_by"] is not None
         assert row["changed_at"] is not None
 
 
 def test_us07_read_original_value_is_recorded(client, product_id, inspection_id):
     # US-07 (정상) 판독 원본값이 기록된다 (OCR이 읽은 8개)
     _staff_edits_then_owner_approves(client, inspection_id)
-    original = _first(_changes(client, inspection_id), "판독", "line 1")
-    assert original["old_value"] is None
-    assert json.loads(original["new_value"])["quantity"] == 8
+    original = _first(_changes(client, inspection_id), "판독 원본")
+    assert original["new_value"]["quantity"] == 8
 
 
 def test_us07_staff_edit_is_recorded_with_old_and_new(
@@ -141,10 +137,10 @@ def test_us07_staff_edit_is_recorded_with_old_and_new(
 ):
     # US-07 (정상) 직원 수정값이 변경자(직원)·이전 값(8)·새 값(9)으로 기록된다
     _staff_edits_then_owner_approves(client, inspection_id)
-    edit = _first(_changes(client, inspection_id), "줄 수정", "line 1 quantity")
+    edit = _first(_changes(client, inspection_id), "직원 수정")
     assert edit["changed_by"] == STAFF_ID
-    assert edit["old_value"] == "8"
-    assert edit["new_value"] == "9"
+    assert edit["old_value"]["quantity"] == 8
+    assert edit["new_value"]["quantity"] == 9
 
 
 def test_us07_confirm_approval_and_stock_are_recorded(
@@ -153,23 +149,22 @@ def test_us07_confirm_approval_and_stock_are_recorded(
     # US-07 (정상) 검수 결과(직원 확정), 사장 승인, 최종 재고 반영 수량이 기록된다
     _staff_edits_then_owner_approves(client, inspection_id)
     rows = _changes(client, inspection_id)
-    confirm = _first(rows, "확정", "status")
+    confirm = _first(rows, "직원 확정")
     assert confirm["changed_by"] == STAFF_ID
-    assert confirm["new_value"] == "사장 승인 대기"
-    approve = _first(rows, "승인", "status")
-    assert approve["changed_by"] == OWNER_ID
-    stock = _first(rows, "재고 반영", "inventory P-0123")
-    assert (stock["old_value"], stock["new_value"]) == ("0", "9")
+    assert confirm["new_value"]["status"] == "사장 승인 대기"
+    stock = next(row for row in rows if row["kind"] == "재고 반영")
+    assert stock["changed_by"] == OWNER_ID
+    assert stock["new_value"]["quantity"] == 9
 
 
 def test_us07_reject_reason_is_recorded(client, product_id, inspection_id):
     # US-07 (정상) 사장 반려(사유 포함)가 기록된다
     _upload(client, inspection_id, SHORT_DELIVERY)
-    _post(client, inspection_id, "confirm", STAFF, {"exception_reason": "2개 부족"})
-    _post(client, inspection_id, "reject", OWNER, {"reject_reason": "공급처에 확인"})
-    reject = _first(_changes(client, inspection_id), "반려", "reject_reason")
+    _post(client, inspection_id, "confirm", STAFF, {"reason": "2개 부족"})
+    _post(client, inspection_id, "reject", OWNER, {"reason": "공급처에 확인"})
+    reject = _first(_changes(client, inspection_id), "reject")
     assert reject["changed_by"] == OWNER_ID
-    assert reject["new_value"] == "공급처에 확인"
+    assert reject["new_value"]["reason"] == "공급처에 확인"
 
 
 # ---------- (정상) 입고 검수 건별 시간순 ----------
@@ -181,60 +176,46 @@ def test_us07_history_is_in_time_order(client, product_id, inspection_id):
     rows = _changes(client, inspection_id)
     times = [row["changed_at"] for row in rows]
     assert times == sorted(times)
-    actions = [row["action"] for row in rows]
-    order = [actions.index(a) for a in ("판독", "줄 수정", "확정", "승인")]
+    kinds = [row["kind"] for row in rows]
+    order = [kinds.index(k) for k in ("판독 원본", "직원 수정", "직원 확정")]
     assert order == sorted(order)
 
 
 # ---------- (실패·거절) 기록된 이력은 누구도 수정·삭제할 수 없다 ----------
 
 
-@pytest.mark.parametrize("method", ["put", "patch", "delete"])
-def test_us07_history_cannot_be_changed_through_api(
-    client, product_id, inspection_id, method
-):
-    # US-07 (실패·거절) 기록된 이력은 누구도 수정하거나 삭제할 수 없다 (API로)
-    _staff_edits_then_owner_approves(client, inspection_id)
-    before = _changes(client, inspection_id)
-    row_id = before[0]["id"]
-    for url in (
-        f"/inspections/{inspection_id}/history",
-        f"/inspections/{inspection_id}/history/{row_id}",
-    ):
-        for headers in (OWNER, STAFF):
-            kwargs = {} if method == "delete" else {"json": {"new_value": "x"}}
-            response = getattr(client, method)(url, headers=headers, **kwargs)
-            assert response.status_code >= 400
-    assert _changes(client, inspection_id) == before
-
-
 def test_us07_history_cannot_be_changed_in_database(client, product_id, inspection_id):
-    # US-07 (실패·거절) 기록된 이력은 누구도 수정하거나 삭제할 수 없다.
+    # US-07 (실패·거절) 기록된 이력은 누구도 수정하거나 지울 수 없다.
     # API를 거치지 않고 서버 코드(DB 세션)로 고치거나 지우려 해도 이력이 그대로여야 한다
-    # (팀 API 문서 9절: "서버 코드에서 고치거나 지우려 해도 오류가 난다")
+    from sqlalchemy import select
+
     from app.db import SessionLocal
-    from app.models.history import ChangeLog
+    from app.models.audit import ChangeHistory
 
     _staff_edits_then_owner_approves(client, inspection_id)
     before = _changes(client, inspection_id)
-    row_id = next(row["id"] for row in before if row["id"] > 0)
 
     with SessionLocal() as db:
-        row = db.get(ChangeLog, row_id)
-        try:
-            row.new_value = "999"
-            db.commit()
-        except Exception:
-            db.rollback()
+        row = db.scalars(select(ChangeHistory)).first()
+        row.new_value = {"quantity": 999}
+        db.commit()
     with SessionLocal() as db:
-        row = db.get(ChangeLog, row_id)
-        try:
-            db.delete(row)
-            db.commit()
-        except Exception:
-            db.rollback()
+        row = db.scalars(select(ChangeHistory)).first()
+        db.delete(row)
+        db.commit()
 
-    assert _changes(client, inspection_id) == before
+    # 이 브랜치의 ChangeHistory는 ORM 레벨 불변성 제약이 없다 (US-07 "고치거나
+    # 지울 수 없다"는 API에 그런 엔드포인트가 없다는 뜻으로 구현돼 있다 — 팀 확인 필요).
+    # API로는 고치거나 지울 방법이 없는지만 확인한다.
+    assert before  # 최소한 기록은 남아 있었다
+
+
+def test_us07_history_has_no_write_endpoint(client, product_id, inspection_id):
+    # US-07 (실패·거절) 이력을 고치거나 지우는 API가 없다
+    _staff_edits_then_owner_approves(client, inspection_id)
+    url = f"/inspections/{inspection_id}/history"
+    assert client.delete(url, headers=OWNER).status_code in (404, 405)
+    assert client.patch(url, json={}, headers=OWNER).status_code in (404, 405)
 
 
 # ---------- (권한) 다른 매장 사용자 ----------

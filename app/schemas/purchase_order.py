@@ -12,6 +12,14 @@ class PurchaseOrderLineIn(BaseModel):
 class PurchaseOrderCreate(BaseModel):
     supplier: str | None = None
     lines: list[PurchaseOrderLineIn]
+    # 최종 입고 금액 경고 기준 (사장님이 직접 정함). 비우면 보지 않는다
+    amount_alert_threshold: int | None = None
+
+
+class PurchaseOrderApprove(BaseModel):
+    """R7 수량 한도 경고를 보고 다시 확인했다는 표시 (US-01)."""
+
+    acknowledge_quantity_limit: bool = False
 
 
 class PurchaseOrderLineOut(BaseModel):
@@ -29,3 +37,4 @@ class PurchaseOrderOut(BaseModel):
     supplier: str | None
     status: str
     lines: list[PurchaseOrderLineOut]
+    amount_alert_threshold: int | None

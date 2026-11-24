@@ -1,6 +1,7 @@
 # US-01 발주 작성·승인·전달 / US-02 공급처 전달 전 발주 취소 (F-02)
 # 사용자: conftest.py 시드 — 1 = 매장 1 사장님, 2 = 매장 1 직원, 3 = 매장 2 사장님
-# 만들지 않은 인수 조건: US-01 R7 수량 한도 경고 (한도 값 미정)
+# R7 수량 한도 경고는 2026-11-16 멘토 데모 피드백 팀 결정을 반영해 만들었다
+# (Product.order_quantity_limit, 사장님이 상품마다 직접 설정).
 # '재고가 바뀌지 않는다'(R3)는 재고 모델이 아직 없어, 재고를 바꾸는 코드가
 # 발주 API에 없다는 것으로만 확인된다 (US-04 재고 반영을 만들 때 테스트 추가).
 
@@ -140,6 +141,23 @@ def test_us01_unregistered_product_is_not_saved(client, product_id):
     assert _order_count() == 0
 
 
+@pytest.mark.parametrize("threshold", [0, -1])
+def test_us01_nonpositive_amount_alert_threshold_is_not_saved(
+    client, product_id, threshold
+):
+    response = client.post(
+        "/purchase-orders",
+        json={
+            "lines": [{"product_id": product_id, "quantity": 1}],
+            "amount_alert_threshold": threshold,
+        },
+        headers=OWNER,
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_AMOUNT_ALERT_THRESHOLD"
+    assert _order_count() == 0
+
+
 def test_us01_other_store_product_counts_as_unregistered(client, product_id):
     # 매장 2 사장님이 매장 1 상품으로 발주할 수 없다
     response = client.post(
@@ -149,6 +167,55 @@ def test_us01_other_store_product_counts_as_unregistered(client, product_id):
     )
     assert response.status_code >= 400
     assert _order_count() == 0
+
+
+# ---------- R7 수량 한도 (2026-11-16 멘토 데모 피드백 팀 결정) ----------
+
+
+def test_us01_quantity_over_limit_blocks_approval_until_acknowledged(
+    client, product_id
+):
+    client.patch(
+        f"/products/{product_id}",
+        json={"order_quantity_limit": 5},
+        headers=OWNER,
+    )
+    response = client.post(
+        "/purchase-orders",
+        json={"lines": [{"product_id": product_id, "quantity": 10}]},
+        headers=OWNER,
+    )
+    order_id = response.json()["id"]
+
+    response = _approve(client, order_id)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "QUANTITY_LIMIT_EXCEEDED"
+    assert _status(client, order_id) == "발주 초안"
+
+    response = client.post(
+        f"/purchase-orders/{order_id}/approve",
+        json={"acknowledge_quantity_limit": True},
+        headers=OWNER,
+    )
+    assert response.status_code == 200, response.text
+    assert _status(client, order_id) == "발주 확인 완료"
+
+
+def test_us01_quantity_within_limit_approves_without_acknowledgement(
+    client, product_id
+):
+    client.patch(
+        f"/products/{product_id}",
+        json={"order_quantity_limit": 20},
+        headers=OWNER,
+    )
+    response = client.post(
+        "/purchase-orders",
+        json={"lines": [{"product_id": product_id, "quantity": 10}]},
+        headers=OWNER,
+    )
+    order_id = response.json()["id"]
+    assert _approve(client, order_id).status_code == 200
 
 
 # ---------- US-01 (권한) ----------

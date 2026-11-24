@@ -122,13 +122,13 @@ def _to_rejected(client, inspection_id):
 
 
 def test_us06_owner_sees_exception_type(client, product_id, inspection_id):
-    # US-06 (정상) 예외 건이 `사장 승인 대기`가 되면 사장님 화면에 예외 종류
-    # (초과 입고·높은 단가·미등록 상품 등)가 보인다.
-    # 필드 이름 exception_types는 PR #8 API 문서의 [제안]. 값 이름은 미정이라
-    # 비어 있지 않은지만 확인한다
+    # US-06 (정상) 예외 건이 `사장 승인 대기`가 되면 사장님 화면에 어느 줄이
+    # 왜 예외인지(match_status) 보인다. 이 브랜치에는 별도 exception_types
+    # 필드가 없어 all_match=false·줄의 match_status로 확인한다
     _to_owner_approval(client, inspection_id)
     inspection = _get(client, inspection_id, headers=OWNER)
-    assert inspection["exception_types"]
+    assert inspection["all_match"] is False
+    assert any(line["match_status"] != "일치" for line in inspection["lines"])
 
 
 def test_us06_owner_sees_staff_reason_and_photo(client, product_id, inspection_id):
