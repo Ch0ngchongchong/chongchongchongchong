@@ -329,6 +329,56 @@ def test_us03_no_candidate_is_empty_and_no_product_is_created(
     assert client.get("/products", headers=OWNER).json() == before
 
 
+# ---------- (LLM) 품목 매칭: 상품 목록을 LLM에 보내 후보를 받는다 ----------
+
+
+def test_us03_product_list_is_sent_to_llm(
+    monkeypatch, client, product_id, inspection_id
+):
+    # 매장 상품 목록(코드·상품명·규격)이 LLM 입력에 포함된다
+    seen = _llm_returns(monkeypatch, _document())
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    [request] = seen
+    assert "P-0123" in str(request)
+    assert "서울우유 1000ml" in str(request)
+
+
+def test_us03_llm_item_candidate_is_used(
+    client, product_id, inspection_id, monkeypatch
+):
+    # LLM이 고른 품목 후보(코드·이유)가 그대로 후보로 쓰인다
+    _llm_returns(
+        monkeypatch,
+        _document(
+            item_candidates=[{"product_code": "P-0123", "reason": "LLM이 고른 이유"}]
+        ),
+    )
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    [line] = _get(client, inspection_id)["lines"]
+    [candidate] = line["candidates"]
+    assert candidate["product_id"] == product_id
+    assert candidate["reason"] == "LLM이 고른 이유"
+
+
+def test_us03_llm_candidate_with_unknown_code_is_dropped(
+    client, product_id, inspection_id, monkeypatch
+):
+    # 매장 상품 목록에 없는 코드(LLM이 지어낸 것)는 버리고, 남는 후보가 없으면
+    # 기존 글자 유사도(_candidates)로 되돌아간다. 품목명이 상품명과 같아
+    # 되돌아간 쪽은 찾아낸다
+    _llm_returns(
+        monkeypatch,
+        _document(
+            item_candidates=[{"product_code": "P-9999", "reason": "지어낸 코드"}]
+        ),
+    )
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    [line] = _get(client, inspection_id)["lines"]
+    [candidate] = line["candidates"]
+    assert candidate["product_id"] == product_id
+    assert candidate["reason"] != "지어낸 코드"
+
+
 # ---------- (LLM) 보내지 않을 정보 ----------
 
 
