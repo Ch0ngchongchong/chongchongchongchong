@@ -61,6 +61,25 @@ def create_product(
             400, "INVALID_CONVERSION_QTY", "환산값은 0보다 커야 합니다"
         )
 
+    # R8 경고 기준은 0 이상이어야 한다 (2026-11-16 멘토 피드백 팀 결정)
+    if (
+        body.price_alert_threshold_percent is not None
+        and body.price_alert_threshold_percent < 0
+    ):
+        return error_response(
+            400,
+            "INVALID_PRICE_ALERT_THRESHOLD",
+            "단가 경고 기준은 0 이상이어야 합니다",
+        )
+
+    # R7 수량 한도는 0보다 커야 한다 (0 이하면 한도라는 의미가 없다)
+    if body.order_quantity_limit is not None and body.order_quantity_limit <= 0:
+        return error_response(
+            400,
+            "INVALID_ORDER_QUANTITY_LIMIT",
+            "발주 수량 한도는 0보다 커야 합니다",
+        )
+
     # ① 같은 매장에 상품 코드가 이미 있으면 저장하지 않는다 (US-08)
     exists = db.scalar(
         select(Product.id).where(
@@ -114,7 +133,15 @@ def update_product(
     확정하는 건부터 새 값이 쓰인다. 이미 재고 반영 완료된 건의 수량·단가가 바뀌지
     않으려면, 입고 확정(US-04·US-06)을 만들 때 그때의 수량·단가를 검수 건 쪽에
     따로 저장해야 한다 (DATA-MODEL.md '직원 확정값을 어디에 저장할지' 미정).
-    직원도 수정할 수 있는지는 미정이라(backlog US-08) 역할로 막지 않는다."""
+    직원도 수정할 수 있는지는 backlog US-08엔 아직 미확정으로 남아 있지만,
+    2026-11-16 멘토 데모 피드백 자리에서 팀이 "상품 등은 사장님만"으로 답해
+    그 결정을 반영해 사장님만 수정할 수 있게 막는다. backlog.md에는 아직
+    반영되지 않았다."""
+    denied = forbidden_unless_role(
+        user, "사장님", message="사장님만 상품을 수정할 수 있습니다"
+    )
+    if denied is not None:
+        return denied
     # 다른 매장 상품은 없는 상품과 똑같이 다룬다 (US-08 권한).
     # 응답 코드는 API.md에 없어 [제안]으로 404 PRODUCT_NOT_FOUND를 쓴다.
     product = db.scalar(
@@ -132,6 +159,24 @@ def update_product(
     if conversion_qty is not None and conversion_qty <= 0:
         return error_response(
             400, "INVALID_CONVERSION_QTY", "환산값은 0보다 커야 합니다"
+        )
+
+    # R8 경고 기준은 0 이상이어야 한다
+    threshold = changes.get("price_alert_threshold_percent")
+    if threshold is not None and threshold < 0:
+        return error_response(
+            400,
+            "INVALID_PRICE_ALERT_THRESHOLD",
+            "단가 경고 기준은 0 이상이어야 합니다",
+        )
+
+    # R7 수량 한도는 0보다 커야 한다
+    order_quantity_limit = changes.get("order_quantity_limit")
+    if order_quantity_limit is not None and order_quantity_limit <= 0:
+        return error_response(
+            400,
+            "INVALID_ORDER_QUANTITY_LIMIT",
+            "발주 수량 한도는 0보다 커야 합니다",
         )
 
     # ① 바꾸려는 상품 코드가 같은 매장의 다른 상품에 있으면 저장하지 않는다 (US-08)

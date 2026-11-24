@@ -25,6 +25,10 @@ class ProductCreate(BaseModel):
     pack_unit: str | None = None
     conversion_qty: int | None = None
     base_unit_price: int | None = None
+    # '평소보다 높은 단가'(R8) 경고 기준. 사장님이 상품마다 직접 정한다
+    price_alert_threshold_percent: int | None = None
+    # 한 번의 발주에서 이 상품 수량 한도 (R7). 사장님이 상품마다 직접 정한다
+    order_quantity_limit: int | None = None
 
     _check_product_code = field_validator("product_code")(_reject_blank)
 
@@ -40,6 +44,8 @@ class ProductUpdate(BaseModel):
     pack_unit: str | None = None
     conversion_qty: int | None = None
     base_unit_price: int | None = None
+    price_alert_threshold_percent: int | None = None
+    order_quantity_limit: int | None = None
 
     # 보내지 않은 필드에는 검사가 돌지 않는다 (기본값은 검증하지 않음)
     _check_product_code = field_validator("product_code")(_reject_blank)
@@ -57,3 +63,5 @@ class ProductOut(BaseModel):
     pack_unit: str | None
     conversion_qty: int | None
     base_unit_price: int | None
+    price_alert_threshold_percent: int | None
+    order_quantity_limit: int | None

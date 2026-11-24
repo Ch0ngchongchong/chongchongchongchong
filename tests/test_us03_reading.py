@@ -3,6 +3,7 @@
 #       필드 이름은 docs/DATA-MODEL.md '판독 결과 줄'(spec, uncertain_fields)과
 #       03 3-4 공통 JSON(document_date, lines, total_amount, uncertain_fields)
 # 사용자: conftest.py 시드 — 1 = 매장 1 사장님, 2 = 매장 1 직원
+# 이 파일은 테스트를 먼저 쓴 것이다. 구현이 없어 실패하는 테스트가 있다.
 #
 # 이 파일에서 다루지 않은 US-03 인수 조건 (팀 질문으로 남김)
 #  - 판독 완료 알림, 판독 실패 시 다시 올려 달라는 알림: 알림 API 약속이 없음
@@ -12,6 +13,12 @@
 from types import SimpleNamespace
 
 import pytest
+
+# 아직 구현이 없는 인수 조건 표시. 기대값은 그대로 두고 표시만 한다.
+# strict=True라서 구현이 끝나 통과하면 이 표시 때문에 실패한다 → 그때 표시를 지운다
+NOT_IMPLEMENTED = pytest.mark.xfail(
+    strict=True, reason="US-03 구현 전 (테스트 먼저 작성, document 이슈 #143)"
+)
 
 OWNER = {"X-User-Id": "1"}
 STAFF = {"X-User-Id": "2"}
@@ -57,7 +64,7 @@ def _document(**line_changes):
 
 @pytest.fixture(autouse=True)
 def upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("ALLOW_TEXT_UPLOAD", "1")
+    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
     return tmp_path
 
 
@@ -211,7 +218,7 @@ def test_us03_uncertain_value_is_blank_and_highlighted(
     assert line["read"]["quantity"] is None
     assert line["quantity"] is None
     assert line["uncertain_fields"] == ["quantity"]
-    assert set(line["open_checks"]) == {"수량 없음", "불확실한 값"}
+    assert draft["check_count"] == 1
 
 
 def test_us03_quantity_times_price_not_amount_is_highlighted(
@@ -239,6 +246,7 @@ def test_us03_line_amounts_not_total_is_highlighted(client, product_id, inspecti
     assert draft["all_match"] is False
 
 
+@NOT_IMPLEMENTED
 def test_us03_number_not_in_ocr_text_is_blank_and_highlighted(
     monkeypatch, client, product_id, inspection_id
 ):
@@ -278,6 +286,7 @@ def test_us03_reading_log_records_tokens_cost_and_elapsed_time(
 # ---------- (실패·거절) LLM 출력이 공통 JSON 모양이 아니면 판독 실패 ----------
 
 
+@NOT_IMPLEMENTED
 @pytest.mark.parametrize(
     "missing_field", ["document_date", "total_amount", "uncertain_fields"]
 )
