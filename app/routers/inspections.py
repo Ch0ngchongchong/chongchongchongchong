@@ -197,6 +197,7 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
         "check_count": evaluation.check_count,
         "all_match": evaluation.all_match,
         "total_amount": inspection.read_total_amount,
+        "document_date": inspection.read_document_date,
         "summary_mismatch": evaluation.summary_mismatch,
         "summary_checked": evaluation.summary_checked,
         "final_amount": evaluation.final_amount,

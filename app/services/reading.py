@@ -107,6 +107,7 @@ def run_reading(inspection_id: int) -> None:
             if not drafts:
                 raise OcrError("명세서에서 품목 줄을 찾지 못했습니다")
             total_amount = getattr(structurer, "total_amount", None)
+            document_date = getattr(structurer, "document_date", None)
             numbers_in_ocr = _numbers_in_text(text)
         except Exception as exc:
             if not isinstance(exc, OcrError):
@@ -178,6 +179,7 @@ def run_reading(inspection_id: int) -> None:
                 )
             )
         inspection.read_total_amount = total_amount
+        inspection.read_document_date = document_date
         inspection.summary_checked = False
         db.add(
             ReadingLog(

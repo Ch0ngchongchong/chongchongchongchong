@@ -30,6 +30,10 @@ class Inspection(Base):
     # 판독이 읽은 명세서 합계 (03 3-4 공통 JSON 'total_amount'). 줄 금액 합과
     # 다르면 규칙 검증 실패로 강조한다. 합계 줄을 못 찾으면 비워 둔다(검증 안 함).
     read_total_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 판독이 읽은 명세서 작성일 (03 3-4 공통 JSON 'document_date'). LLM이 돌려준
+    # 글자 그대로 저장한다 — 형식을 정하거나 검증하지 않는다. 확신하지 못했으면
+    # (uncertain_fields) 비워 둔다. 못 찾았으면 null
+    read_document_date: Mapped[str | None] = mapped_column(String, nullable=True)
     # 사장님/직원이 '줄 금액 합≠합계' 경고를 확인했다는 표시. 다시 판독하면
     # False로 되돌아간다. 새로 판독할 때마다 확인해야 한다.
     summary_checked: Mapped[bool] = mapped_column(

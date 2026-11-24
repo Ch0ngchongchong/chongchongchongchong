@@ -203,6 +203,32 @@ def test_us03_each_line_shows_spec(monkeypatch, client, product_id, inspection_i
     assert line["read"]["spec"] == "1L"
 
 
+# ---------- (정상) 작성일(document_date) ----------
+
+
+def test_us03_document_date_is_stored_and_shown(
+    monkeypatch, client, product_id, inspection_id
+):
+    # US-03 (정상) 03 3-4 공통 JSON의 document_date가 저장되고 응답에 나온다
+    document = _document()
+    document["document_date"] = "2026-11-20"
+    _llm_returns(monkeypatch, document)
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    assert _get(client, inspection_id)["document_date"] == "2026-11-20"
+
+
+def test_us03_uncertain_document_date_is_blank(
+    monkeypatch, client, product_id, inspection_id
+):
+    # LLM이 document_date를 확신하지 못하면(문서 전체 uncertain_fields) 빈칸으로 둔다
+    document = _document()
+    document["document_date"] = "2026-11-20"
+    document["uncertain_fields"] = ["document_date"]
+    _llm_returns(monkeypatch, document)
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    assert _get(client, inspection_id)["document_date"] is None
+
+
 # ---------- (정상) 불확실한 값·규칙 검증 실패 칸은 추측값 없이 빈칸으로 강조 ----------
 
 

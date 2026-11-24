@@ -126,6 +126,8 @@ def _llm_candidates(item_candidates, by_code: dict[str, ProductRef]) -> list[Can
 class RuleBasedStructurer:
     def __init__(self):
         self.total_amount: int | None = None
+        # 규칙 방식은 작성일 줄을 읽는 규칙이 없어 항상 null이다 (LLM만 채움)
+        self.document_date: str | None = None
 
     def structure(
         self, masked_text: str, products: list[ProductRef]
@@ -175,6 +177,7 @@ class OpenAIStructurer:
         self.output_tokens = None
         self.cost = None
         self.total_amount = None
+        self.document_date = None
 
     def structure(
         self, masked_text: str, products: list[ProductRef]
@@ -262,6 +265,11 @@ class OpenAIStructurer:
         parsed = response.output_parsed
         self.total_amount = (
             None if "total_amount" in parsed.uncertain_fields else parsed.total_amount
+        )
+        self.document_date = (
+            None
+            if "document_date" in parsed.uncertain_fields
+            else parsed.document_date
         )
         by_code = {p.product_code: p for p in products}
         lines = []
