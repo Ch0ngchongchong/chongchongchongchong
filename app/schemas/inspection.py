@@ -105,6 +105,9 @@ class InspectionOut(BaseModel):
     final_amount: int
     # final_amount이 발주의 금액 경고 기준을 넘으면 true (예외 건으로 분류)
     amount_over_limit: bool
+    # 판독이 읽은 명세서 작성일. LLM이 돌려준 글자 그대로(형식 검증 안 함).
+    # 확신 못 했거나 못 찾았으면 null
+    document_date: str | None = None
 
 
 class InspectionLineUpdate(BaseModel):
