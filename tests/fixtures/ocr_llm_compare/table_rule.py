@@ -12,7 +12,6 @@ import re
 
 from app.services.structurer import (
     _LINE,
-    DraftDocument,
     DraftLine,
     _candidates,
     _to_int,
@@ -75,6 +74,13 @@ def _total(line):
 
 
 class TableRuleStructurer:
+    """서버 structurer와 같은 모양: structure()는 줄 목록을 돌려주고 합계는
+    `total_amount` 속성에 둔다. 작성일도 `document_date` 속성에 둔다 (실험용)."""
+
+    def __init__(self):
+        self.total_amount = None
+        self.document_date = None
+
     def structure(self, masked_text, products):
         lines, total, date, header = [], None, None, None
         for raw in masked_text.splitlines():
@@ -97,7 +103,8 @@ class TableRuleStructurer:
             if line is not None:
                 lines.append(line)
         # 규칙 방식이라 '확신하지 못한 값'은 만들지 않는다 (서버 규칙 방식과 같음)
-        return DraftDocument(lines=lines, document_date=date, total_amount=total)
+        self.total_amount, self.document_date = total, date
+        return lines
 
     @staticmethod
     def _one_line(text, products):
