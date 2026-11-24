@@ -1,0 +1,35 @@
+<!doctype html>
+<!-- 05 포장재 (가상) — 상품 코드 표기, 같은 상품이 박스(BOX)와 낱개(EA)로 섞임, 날짜 'YYYY/MM/DD' -->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #fff; color: #111; font-family: "Apple SD Gothic Neo", sans-serif; }
+  .page { width: 820px; padding: 40px; }
+  h1 { font-size: 26px; margin: 0 0 14px; border-left: 8px solid #111; padding-left: 12px; }
+  .info { font-size: 15px; line-height: 1.7; margin-bottom: 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 17px; }
+  th, td { border: 1px solid #999; padding: 8px 9px; }
+  th { background: #f2f2f2; }
+  td.n { text-align: right; }
+  .total { text-align: right; font-size: 20px; font-weight: 700; margin-top: 14px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>(가상) 다온패키지 거래명세표</h1>
+  <div class="info">
+    출고일 2026/11/21 · 등록번호 567-89-01234<br>
+    담당: 정가상 · Tel 010-0000-0004 · 납품처 (가상) 카페 1호점
+  </div>
+  <table>
+    <tr><th>코드</th><th>품명</th><th>수량</th><th>단위</th><th>단가</th><th>금액</th></tr>
+    <tr><td>P-0201</td><td>종이컵 12oz</td><td class="n">2</td><td>BOX</td><td class="n">28,800</td><td class="n">57,600</td></tr>
+    <tr><td>P-0201</td><td>종이컵 12oz</td><td class="n">24</td><td>EA</td><td class="n">1,200</td><td class="n">28,800</td></tr>
+    <tr><td>P-0202</td><td>컵 뚜껑 90파이</td><td class="n">1</td><td>BOX</td><td class="n">25,000</td><td class="n">25,000</td></tr>
+    <tr><td>P-0203</td><td>컵홀더</td><td class="n">3</td><td>묶음</td><td class="n">4,000</td><td class="n">12,000</td></tr>
+  </table>
+  <div class="total">합계 123,400원</div>
+</div>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "statement": "statements/02-grocery-a.png",
+  "supplier_type": "식자재",
+  "document_date": "2026-11-19",
+  "total_amount": 149200,
+  "lines": [
+    {"raw_name": "바닐라 시럽", "spec": "1L", "quantity": 1, "unit": "박스", "unit_price": 57000, "amount": 57000, "product_code": "P-0301"},
+    {"raw_name": "카라멜 소스", "spec": "2kg", "quantity": 2, "unit": "통", "unit_price": 14000, "amount": 28000, "product_code": "P-0302"},
+    {"raw_name": "백설탕", "spec": "3kg", "quantity": 6, "unit": "봉", "unit_price": 5200, "amount": 31200, "product_code": "P-0303"},
+    {"raw_name": "냉동 블루베리", "spec": "1kg", "quantity": 3, "unit": "봉", "unit_price": 11000, "amount": 33000, "product_code": "P-0304"}
+  ]
+}

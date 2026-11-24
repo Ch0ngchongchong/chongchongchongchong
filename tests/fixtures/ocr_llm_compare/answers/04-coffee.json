@@ -1,0 +1,12 @@
+{
+  "statement": "statements/04-coffee.png",
+  "supplier_type": "원두",
+  "document_date": "2026-11-17",
+  "total_amount": 282000,
+  "note": "로스팅일 2026-11-16은 작성일이 아님",
+  "lines": [
+    {"raw_name": "Ethiopia Yirgacheffe G2", "spec": "1kg", "quantity": 5, "unit": "kg", "unit_price": 32000, "amount": 160000, "product_code": "P-0401"},
+    {"raw_name": "Colombia Supremo", "spec": "1kg", "quantity": 3, "unit": "kg", "unit_price": 26000, "amount": 78000, "product_code": "P-0402"},
+    {"raw_name": "Brazil Santos", "spec": "1kg", "quantity": 2, "unit": "kg", "unit_price": 22000, "amount": 44000, "product_code": "P-0403"}
+  ]
+}
