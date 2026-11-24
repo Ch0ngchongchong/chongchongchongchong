@@ -5,6 +5,7 @@
 서버 코드는 고치지 않는다.
 
 --text ocr  : 실제 OCR(Tesseract)로 읽은 글자를 쓴다 (서버와 같음)
+--structurer rule-table : 표 양식도 읽는 실험 전용 규칙 방식 (table_rule.py)
 --text html : OCR을 거치지 않고 HTML 원본에서 꺼낸 글자를 쓴다.
               OCR 오류를 빼고 '정리 단계(규칙 vs LLM)'만 비교하려는 조건이다
 
@@ -134,14 +135,23 @@ def ox(ok):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--structurer", choices=["rule", "openai"], required=True)
+    parser.add_argument(
+        "--structurer", choices=["rule", "rule-table", "openai"], required=True
+    )
     parser.add_argument("--text", choices=["ocr", "html"], default="ocr")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
-    os.environ["STRUCTURER"] = args.structurer
-    from app.services.structurer import get_structurer
+    if args.structurer == "rule-table":
+        # 실험 전용 규칙 방식 (표 양식도 읽음, 이슈 #36)
+        sys.path.insert(0, str(HERE))
+        from table_rule import TableRuleStructurer
 
-    structurer = get_structurer()
+        structurer = TableRuleStructurer()
+    else:
+        os.environ["STRUCTURER"] = args.structurer
+        from app.services.structurer import get_structurer
+
+        structurer = get_structurer()
     refs, code_of = load_products()
     ocr = LocalOcr()
 
