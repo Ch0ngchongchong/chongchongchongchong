@@ -42,6 +42,10 @@ MATCH_NOT_IN_ORDER = "발주에 없음"
 MATCH_QTY_DIFF = "수량 다름"
 MATCH_PRICE_DIFF = "단가 다름"
 MATCH_DAMAGED = "파손"  # 직원이 파손을 표시함 (US-04)
+# 사장님이 고가 상품으로 지정함 → 가격 일치 여부와 무관하게 항상 예외
+# (US-06, 미팅2 피드백 13. 효과는 backlog.md에 미확정이었으나 2026-11-24
+# 팀 확인으로 정함)
+MATCH_PREMIUM = "고가 상품"
 MATCH_MISSING_IN_STATEMENT = "명세서에 없음"  # 발주 줄인데 명세서에 없음
 
 # 규칙 검증 실패 칸 (US-03 안전장치, 미팅1 피드백 6)
@@ -412,6 +416,8 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
         product = check.product
         if check.line.damaged:
             check.status = MATCH_DAMAGED
+        elif product.is_premium:
+            check.status = MATCH_PREMIUM
         elif product.id not in ordered:
             check.status = MATCH_NOT_IN_ORDER
         elif received[product.id] != ordered[product.id]:

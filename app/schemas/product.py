@@ -27,6 +27,9 @@ class ProductCreate(BaseModel):
     base_unit_price: int | None = None
     # '평소보다 높은 단가'(R8) 경고 기준. 사장님이 상품마다 직접 정한다
     price_alert_threshold_percent: int | None = None
+    # 고가 상품 지정 (US-06, 미팅2 피드백 13). 지정하면 가격 일치 여부와
+    # 무관하게 입고 때 항상 사장 승인 대기로 간다
+    is_premium: bool = False
 
     _check_product_code = field_validator("product_code")(_reject_blank)
 
@@ -43,6 +46,7 @@ class ProductUpdate(BaseModel):
     conversion_qty: int | None = None
     base_unit_price: int | None = None
     price_alert_threshold_percent: int | None = None
+    is_premium: bool | None = None
 
     # 보내지 않은 필드에는 검사가 돌지 않는다 (기본값은 검증하지 않음)
     _check_product_code = field_validator("product_code")(_reject_blank)
@@ -61,3 +65,4 @@ class ProductOut(BaseModel):
     conversion_qty: int | None
     base_unit_price: int | None
     price_alert_threshold_percent: int | None
+    is_premium: bool

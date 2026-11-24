@@ -1,7 +1,7 @@
 # 상품 모델 (DATA-MODEL.md 상품 필드 그대로, US-08 / F-01)
 # 필수 여부가 '미정'인 필드는 빈 값을 허용해 둔다. 필수값이 정해지면 nullable을 바꾼다.
 
-from sqlalchemy import Integer, String, UniqueConstraint
+from sqlalchemy import Boolean, Integer, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db import Base
@@ -33,3 +33,8 @@ class Product(Base):
     price_alert_threshold_percent: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
+    # 사장님이 직접 지정하는 고가 상품 (US-06, 미팅2 피드백 13). 지정된
+    # 상품은 가격 일치 여부와 무관하게 입고 때 항상 사장 승인 대기로 간다
+    # (파손과 같은 축의 예외 상태, 2026-11-24 팀 확인). backlog.md US-06에는
+    # 지정할 수 있다는 인수 조건만 있고 효과는 미확정이었던 것을 반영한다.
+    is_premium: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

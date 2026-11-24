@@ -337,6 +337,39 @@ def test_lower_price_with_threshold_is_not_flagged(client, product_id, inspectio
     assert response.json()["status"] == "재고 반영 완료"
 
 
+# 고가 상품 지정 (US-06, 미팅2 피드백 13. backlog.md에는 지정할 수 있다는
+# 조건만 있고 효과는 미확정이었다 — 2026-11-24 팀 확인: 가격 일치 여부와
+# 무관하게 항상 사장 승인 대기로 간다)
+def test_premium_product_always_goes_to_owner_approval_even_when_matching(
+    client, product_id, inspection_id
+):
+    client.patch(
+        f"/products/{product_id}",
+        json={"is_premium": True},
+        headers=OWNER,
+    )
+    # 발주·단가 모두 일치하는 명세서인데도 고가 상품이라 예외로 분류된다
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    assert _get(client, inspection_id)["lines"][0]["match_status"] == "고가 상품"
+    response = client.post(
+        f"/inspections/{inspection_id}/confirm",
+        headers=STAFF,
+        json={"reason": "고가 상품 확인"},
+    )
+    assert response.json()["status"] == "사장 승인 대기"
+    assert _stock(client, product_id) == 0
+
+
+def test_staff_cannot_designate_premium_product(client, product_id):
+    response = client.patch(
+        f"/products/{product_id}",
+        json={"is_premium": True},
+        headers=STAFF,
+    )
+    assert response.status_code >= 400
+    assert client.get("/products", headers=OWNER).json()[0]["is_premium"] is False
+
+
 # 최종 금액 초과 알림 (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 발주마다
 # amount_alert_threshold를 직접 정한다)
 def test_final_amount_over_limit_goes_to_owner_approval(client, product_id):
