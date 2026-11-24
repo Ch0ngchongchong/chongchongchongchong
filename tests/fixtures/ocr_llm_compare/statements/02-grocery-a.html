@@ -1,0 +1,37 @@
+<!doctype html>
+<!-- 02 식자재 A (가상) — 표 양식(품명·규격·단위·수량·단가·금액), 아래에 합계 -->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #fff; color: #111; font-family: "Apple SD Gothic Neo", sans-serif; }
+  .page { width: 820px; padding: 40px; }
+  h1 { font-size: 28px; text-align: center; margin: 0 0 6px; }
+  .sub { text-align: center; font-size: 15px; margin-bottom: 22px; }
+  .head { display: flex; justify-content: space-between; font-size: 16px; line-height: 1.7; margin-bottom: 16px; }
+  table { width: 100%; border-collapse: collapse; font-size: 18px; }
+  th, td { border: 1px solid #111; padding: 9px 10px; }
+  th { background: #eee; }
+  td.n { text-align: right; }
+  .sum td { font-weight: 700; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>거 래 명 세 서</h1>
+  <div class="sub">(공급받는자 보관용)</div>
+  <div class="head">
+    <div>공급자 (가상) 푸른식자재<br>등록번호 234-56-78901<br>담당자 이가상 / 010-0000-0001</div>
+    <div>거래일자 2026.11.19<br>공급받는자 (가상) 카페 1호점</div>
+  </div>
+  <table>
+    <tr><th>품명</th><th>규격</th><th>단위</th><th>수량</th><th>단가</th><th>금액</th></tr>
+    <tr><td>바닐라 시럽</td><td>1L</td><td>박스</td><td class="n">1</td><td class="n">57,000</td><td class="n">57,000</td></tr>
+    <tr><td>카라멜 소스</td><td>2kg</td><td>통</td><td class="n">2</td><td class="n">14,000</td><td class="n">28,000</td></tr>
+    <tr><td>백설탕</td><td>3kg</td><td>봉</td><td class="n">6</td><td class="n">5,200</td><td class="n">31,200</td></tr>
+    <tr><td>냉동 블루베리</td><td>1kg</td><td>봉</td><td class="n">3</td><td class="n">11,000</td><td class="n">33,000</td></tr>
+    <tr class="sum"><td colspan="5">합계</td><td class="n">149,200</td></tr>
+  </table>
+</div>
+</body>
+</html>

@@ -1,0 +1,11 @@
+{
+  "statement": "statements/01-dairy.png",
+  "supplier_type": "유제품",
+  "document_date": "2026-11-20",
+  "total_amount": 211400,
+  "lines": [
+    {"raw_name": "서울우유 1000ml", "spec": null, "quantity": 2, "unit": "박스", "unit_price": 26500, "amount": 53000, "product_code": "P-0123"},
+    {"raw_name": "생크림 1000ml", "spec": null, "quantity": 1, "unit": "박스", "unit_price": 81600, "amount": 81600, "product_code": "P-0125"},
+    {"raw_name": "플레인 요거트 450g", "spec": null, "quantity": 3, "unit": "박스", "unit_price": 25600, "amount": 76800, "product_code": "P-0126"}
+  ]
+}

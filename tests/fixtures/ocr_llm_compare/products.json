@@ -1,0 +1,16 @@
+[
+  {"product_code": "P-0123", "name": "서울우유 1000ml", "spec": "1L", "base_unit": "개", "pack_unit": "박스", "conversion_qty": 10, "base_unit_price": 2650},
+  {"product_code": "P-0125", "name": "생크림 1000ml", "spec": "1L", "base_unit": "개", "pack_unit": "박스", "conversion_qty": 12, "base_unit_price": 6800},
+  {"product_code": "P-0126", "name": "플레인 요거트 450g", "spec": "450g", "base_unit": "개", "pack_unit": "박스", "conversion_qty": 8, "base_unit_price": 3200},
+  {"product_code": "P-0301", "name": "바닐라 시럽 1L", "spec": "1L", "base_unit": "병", "pack_unit": "박스", "conversion_qty": 6, "base_unit_price": 9500},
+  {"product_code": "P-0302", "name": "카라멜 소스 2kg", "spec": "2kg", "base_unit": "통", "pack_unit": null, "conversion_qty": null, "base_unit_price": 14000},
+  {"product_code": "P-0303", "name": "백설탕 3kg", "spec": "3kg", "base_unit": "봉", "pack_unit": "박스", "conversion_qty": 6, "base_unit_price": 5200},
+  {"product_code": "P-0304", "name": "냉동 블루베리 1kg", "spec": "1kg", "base_unit": "봉", "pack_unit": null, "conversion_qty": null, "base_unit_price": 11000},
+  {"product_code": "P-0305", "name": "휘핑크림 1000ml", "spec": "1L", "base_unit": "개", "pack_unit": "박스", "conversion_qty": 12, "base_unit_price": 7400},
+  {"product_code": "P-0401", "name": "에티오피아 예가체프 원두 1kg", "spec": "1kg", "base_unit": "kg", "pack_unit": null, "conversion_qty": null, "base_unit_price": 32000},
+  {"product_code": "P-0402", "name": "콜롬비아 수프리모 원두 1kg", "spec": "1kg", "base_unit": "kg", "pack_unit": null, "conversion_qty": null, "base_unit_price": 26000},
+  {"product_code": "P-0403", "name": "브라질 산토스 원두 1kg", "spec": "1kg", "base_unit": "kg", "pack_unit": null, "conversion_qty": null, "base_unit_price": 22000},
+  {"product_code": "P-0201", "name": "종이컵 12oz", "spec": "12oz", "base_unit": "개", "pack_unit": "박스", "conversion_qty": 24, "base_unit_price": 1200},
+  {"product_code": "P-0202", "name": "컵 뚜껑 90파이", "spec": "90mm", "base_unit": "개", "pack_unit": "박스", "conversion_qty": 1000, "base_unit_price": 25},
+  {"product_code": "P-0203", "name": "컵홀더", "spec": null, "base_unit": "개", "pack_unit": "묶음", "conversion_qty": 100, "base_unit_price": 40}
+]

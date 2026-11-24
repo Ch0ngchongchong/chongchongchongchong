@@ -1,0 +1,46 @@
+<!doctype html>
+<!-- 03 식자재 B (가상) — 열 순서가 다름(금액이 앞), 수량에 단위가 붙음, 약칭,
+     공급가액·세액·합계를 따로 적음, 날짜가 'YYYY년 M월 D일' -->
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; background: #fff; color: #111; font-family: "Apple SD Gothic Neo", sans-serif; }
+  .page { width: 820px; padding: 40px; }
+  .top { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 3px double #111; padding-bottom: 10px; margin-bottom: 18px; }
+  .top h1 { font-size: 26px; margin: 0; }
+  .top .date { font-size: 16px; }
+  .who { font-size: 15px; line-height: 1.7; margin-bottom: 18px; }
+  table { width: 100%; border-collapse: collapse; font-size: 18px; }
+  th, td { border-bottom: 1px solid #555; padding: 9px 8px; text-align: left; }
+  th { border-bottom: 2px solid #111; }
+  td.n { text-align: right; }
+  .foot { margin-top: 20px; margin-left: auto; width: 340px; font-size: 18px; line-height: 1.9; }
+  .foot div { display: flex; justify-content: space-between; }
+  .foot .t { font-weight: 700; border-top: 1px solid #111; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <h1>(가상) 새솔푸드 납품서</h1>
+    <div class="date">2026년 11월 18일</div>
+  </div>
+  <div class="who">
+    사업자번호 345-67-89012 · 영업담당 박가상 (010-0000-0002)<br>
+    납품처: (가상) 카페 1호점
+  </div>
+  <table>
+    <tr><th>No</th><th>금액</th><th>수량</th><th>단가</th><th>품목 / 규격</th></tr>
+    <tr><td>1</td><td class="n">88,800</td><td>1 BOX</td><td class="n">88,800</td><td>휘핑 1L×12</td></tr>
+    <tr><td>2</td><td class="n">15,600</td><td>3 EA</td><td class="n">5,200</td><td>설탕(백) 3kg</td></tr>
+    <tr><td>3</td><td class="n">22,000</td><td>2 EA</td><td class="n">11,000</td><td>블루베리 냉동 1kg</td></tr>
+  </table>
+  <div class="foot">
+    <div><span>공급가액</span><span>126,400</span></div>
+    <div><span>세액</span><span>12,640</span></div>
+    <div class="t"><span>합계</span><span>139,040</span></div>
+  </div>
+</div>
+</body>
+</html>

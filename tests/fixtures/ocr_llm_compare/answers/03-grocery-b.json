@@ -1,0 +1,12 @@
+{
+  "statement": "statements/03-grocery-b.png",
+  "supplier_type": "식자재",
+  "document_date": "2026-11-18",
+  "total_amount": 139040,
+  "note": "합계 139,040은 공급가액 126,400 + 세액 12,640. 줄 금액 합(126,400)과 합계가 달라 '줄 금액 합 ≠ 합계' 규칙 검증에 걸리는 것이 정상",
+  "lines": [
+    {"raw_name": "휘핑 1L×12", "spec": null, "quantity": 1, "unit": "BOX", "unit_price": 88800, "amount": 88800, "product_code": "P-0305"},
+    {"raw_name": "설탕(백) 3kg", "spec": null, "quantity": 3, "unit": "EA", "unit_price": 5200, "amount": 15600, "product_code": "P-0303"},
+    {"raw_name": "블루베리 냉동 1kg", "spec": null, "quantity": 2, "unit": "EA", "unit_price": 11000, "amount": 22000, "product_code": "P-0304"}
+  ]
+}

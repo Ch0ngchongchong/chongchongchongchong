@@ -1,0 +1,13 @@
+{
+  "statement": "statements/05-packaging.png",
+  "supplier_type": "포장재",
+  "document_date": "2026-11-21",
+  "total_amount": 123400,
+  "note": "1·2번 줄은 같은 상품(P-0201)이 BOX와 EA로 나뉘어 적힘 (US-05 박스·낱개 혼재)",
+  "lines": [
+    {"raw_name": "종이컵 12oz", "spec": null, "quantity": 2, "unit": "BOX", "unit_price": 28800, "amount": 57600, "product_code": "P-0201"},
+    {"raw_name": "종이컵 12oz", "spec": null, "quantity": 24, "unit": "EA", "unit_price": 1200, "amount": 28800, "product_code": "P-0201"},
+    {"raw_name": "컵 뚜껑 90파이", "spec": null, "quantity": 1, "unit": "BOX", "unit_price": 25000, "amount": 25000, "product_code": "P-0202"},
+    {"raw_name": "컵홀더", "spec": null, "quantity": 3, "unit": "묶음", "unit_price": 4000, "amount": 12000, "product_code": "P-0203"}
+  ]
+}
