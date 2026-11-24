@@ -25,10 +25,12 @@ from app.main import app  # noqa: E402
 from app.models.user import StoreUser  # noqa: E402
 
 # DATA-MODEL.md 시드 #1: (가) store 1 사장님 / (나) store 1 직원 / (다) store 2 사장님
+# 4번은 '담당 입고 건' 제한 테스트용으로 추가한 store 1의 또 다른 직원이다.
 SEED_USERS = [
     {"id": 1, "store_id": 1, "role": "사장님"},
     {"id": 2, "store_id": 1, "role": "직원"},
     {"id": 3, "store_id": 2, "role": "사장님"},
+    {"id": 4, "store_id": 1, "role": "직원"},
 ]
 
 # 테스트에서 store=1, store=2로 부를 때 쓰는 사용자 (각 매장의 사장님)

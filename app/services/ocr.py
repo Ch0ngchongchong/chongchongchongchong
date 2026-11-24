@@ -88,9 +88,25 @@ class LocalOcr:
                     images = [path]
                 if not images:
                     raise OcrError("명세서 페이지를 읽을 수 없습니다")
+                # 비교 실험(이슈 #31·#33) 결과: psm 기본값(3, 자동 레이아웃 분석)은
+                # 표 양식에서 수량 칸을 통째로 놓치는 일이 있었다. psm 4(여러 줄의
+                # 한 단만 있다고 가정)로 바꾸면 그 수량 칸은 살아나지만, 다른 표본
+                # 하나에서 줄이 합쳐지는 손해가 있었다 — 어느 쪽도 완벽하지 않다.
+                # 칸이 통째로 비는 쪽이 뒤 단계(LLM)에서 되살릴 수 없어 더 나쁘다고
+                # 보고 4를 기본값으로 뒀다. 값을 바꾼 뒤에는 run_compare.py로 다시
+                # 돌려 수치로 확인한다.
+                psm = os.environ.get("OCR_TESSERACT_PSM", "4")
                 return "\n".join(
                     subprocess.run(
-                        ["tesseract", str(image), "stdout", "-l", "kor+eng"],
+                        [
+                            "tesseract",
+                            str(image),
+                            "stdout",
+                            "-l",
+                            "kor+eng",
+                            "--psm",
+                            psm,
+                        ],
                         capture_output=True,
                         text=True,
                         check=True,

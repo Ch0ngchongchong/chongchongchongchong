@@ -66,6 +66,8 @@ def product():
         "pack_unit": "박스",
         "conversion_qty": 10,
         "base_unit_price": 2650,
+        "price_alert_threshold_percent": None,
+        "order_quantity_limit": None,
     }
 
 
@@ -89,6 +91,42 @@ def test_us08_nonpositive_conversion_qty_is_rejected(product_api, product, quant
     assert product_api.list_products(store=1) == before
 
 
+# R8 경고 기준(price_alert_threshold_percent)은 음수면 저장되지 않는다
+# (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 상품마다 직접 설정)
+def test_us08_negative_price_alert_threshold_is_rejected(product_api, product):
+    product["price_alert_threshold_percent"] = -1
+    before = product_api.list_products(store=1)
+    response = product_api.create_rejected(store=1, product=product)
+    assert response.json()["error"]["code"] == "INVALID_PRICE_ALERT_THRESHOLD"
+    assert product_api.list_products(store=1) == before
+
+
+def test_us08_update_to_negative_price_alert_threshold_is_rejected(
+    product_api, product
+):
+    created = product_api.create(store=1, product=product)
+    response = product_api.update_rejected(
+        store=1,
+        product_id=created["id"],
+        changes={"price_alert_threshold_percent": -5},
+    )
+    assert response.json()["error"]["code"] == "INVALID_PRICE_ALERT_THRESHOLD"
+    assert product_api.list_products(store=1) == [product]
+
+
+# R7 수량 한도(order_quantity_limit)는 0 이하면 저장되지 않는다
+# (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 상품마다 직접 설정)
+@pytest.mark.parametrize("limit", [0, -1])
+def test_us08_nonpositive_order_quantity_limit_is_rejected(
+    product_api, product, limit
+):
+    product["order_quantity_limit"] = limit
+    before = product_api.list_products(store=1)
+    response = product_api.create_rejected(store=1, product=product)
+    assert response.json()["error"]["code"] == "INVALID_ORDER_QUANTITY_LIMIT"
+    assert product_api.list_products(store=1) == before
+
+
 def test_us08_other_store_cannot_view_product(product_api, product):
     product_api.create(store=1, product=product)
     assert product not in product_api.list_products(store=2)
@@ -109,14 +147,136 @@ def test_us08_missing_required_value_is_rejected(product_api, product, empty_cod
     assert product_api.list_products(store=1) == before
 
 
-@pytest.mark.skip(reason="입고 확정 및 판독 기능과 API 계약이 아직 없음")
-def test_us08_changes_apply_to_future_confirmations_and_product_is_candidate():
-    pass
+class ReceivingApi:
+    """발주 → 명세서 업로드 → 확정을 매장 1 사용자로 진행하는 도우미.
+    사용자: conftest.py 시드 — 1 = 매장 1 사장님, 2 = 매장 1 직원."""
+
+    OWNER = {"X-User-Id": "1"}
+    STAFF = {"X-User-Id": "2"}
+
+    def __init__(self, client):
+        self.client = client
+
+    def inspection_for_order(self, product_id, quantity):
+        """발주(상품 × 기준 단위 수량)를 `입고 대기`까지 보내고
+        만들어진 `업로드 대기` 검수 건 ID를 돌려준다."""
+        order = self.client.post(
+            "/purchase-orders",
+            json={
+                "supplier": "(가상) 유제품 공급처 A",
+                "lines": [{"product_id": product_id, "quantity": quantity}],
+            },
+            headers=self.OWNER,
+        ).json()
+        for step in ("approve", "mark-delivered"):
+            response = self.client.post(
+                f"/purchase-orders/{order['id']}/{step}", headers=self.OWNER
+            )
+            assert response.is_success, response.text
+        [inspection] = self.client.get(
+            "/inspections", params={"status": "업로드 대기"}, headers=self.STAFF
+        ).json()
+        return inspection["id"]
+
+    def upload(self, inspection_id, text):
+        response = self.client.post(
+            f"/inspections/{inspection_id}/document",
+            files={"file": ("statement.txt", text.encode(), "text/plain")},
+            headers=self.STAFF,
+        )
+        assert response.status_code == 200, response.text
+
+    def get(self, inspection_id):
+        response = self.client.get(f"/inspections/{inspection_id}", headers=self.STAFF)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def confirm(self, inspection_id):
+        response = self.client.post(
+            f"/inspections/{inspection_id}/confirm", headers=self.STAFF
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["status"]
+
+    def stock(self, product_id):
+        rows = self.client.get("/inventory", headers=self.OWNER).json()
+        return next(
+            (row["quantity"] for row in rows if row["product_id"] == product_id), 0
+        )
 
 
-# US-08 인수 조건 #2 — 환산값·기준 단가 수정 (상품 쪽 저장까지만).
-# '이후 확정 건부터 적용·재고 반영 완료 건은 그대로'는
-# 입고 확정 기능이 생긴 뒤 위 skip 테스트에서 확인한다.
+@pytest.fixture
+def receiving(client, monkeypatch):
+    # 테스트에서는 명세서를 글자 파일로 올린다 (test_us05_conversion.py와 같은 설정)
+    monkeypatch.setenv("ALLOW_TEXT_UPLOAD", "1")
+    return ReceivingApi(client)
+
+
+# US-08 (정상) 저장하면 … 이후 판독의 품목 후보 대상이 된다
+def test_us08_saved_product_becomes_reading_candidate(product_api, product, receiving):
+    created = product_api.create(store=1, product=product)
+    inspection_id = receiving.inspection_for_order(created["id"], 20)
+    receiving.upload(inspection_id, "서울우유 1000ml 2박스 × 26,500원 = 53,000원\n")
+    [line] = receiving.get(inspection_id)["lines"]
+    assert created["id"] in [c["product_id"] for c in line["candidates"]]
+
+
+# US-08 (정상) 환산값을 수정하면 그 뒤에 확정하는 건부터 새 값이 적용되고,
+# 이미 `재고 반영 완료`된 건의 수량은 바뀌지 않는다
+def test_us08_conversion_change_applies_only_to_later_confirmations(
+    product_api, product, receiving
+):
+    created = product_api.create(store=1, product=product)  # 박스당 10개
+    first = receiving.inspection_for_order(created["id"], 20)
+    receiving.upload(first, "서울우유 1000ml 2박스 × 26,500원 = 53,000원\n")
+    assert receiving.confirm(first) == "재고 반영 완료"
+    assert receiving.stock(created["id"]) == 20
+
+    product_api.update(
+        store=1, product_id=created["id"], changes={"conversion_qty": 12}
+    )
+
+    # 이미 반영된 건: 수량·재고 그대로
+    [done_line] = receiving.get(first)["lines"]
+    assert done_line["base_quantity"] == 20
+    assert receiving.stock(created["id"]) == 20
+
+    # 수정 뒤 확정하는 건: 2박스 × 12개 = 24개 (기준 단위 1개당 2,650원은 그대로)
+    second = receiving.inspection_for_order(created["id"], 24)
+    receiving.upload(second, "서울우유 1000ml 2박스 × 31,800원 = 63,600원\n")
+    [line] = receiving.get(second)["lines"]
+    assert line["base_quantity"] == 24
+    assert receiving.confirm(second) == "재고 반영 완료"
+    assert receiving.stock(created["id"]) == 20 + 24
+
+
+# US-08 (정상) 기준 단가를 수정하면 그 뒤에 확정하는 건부터 새 값이 적용되고,
+# 이미 `재고 반영 완료`된 건의 단가는 바뀌지 않는다
+def test_us08_price_change_applies_only_to_later_confirmations(
+    product_api, product, receiving
+):
+    created = product_api.create(store=1, product=product)  # 기준 단가 2,650원
+    first = receiving.inspection_for_order(created["id"], 20)
+    receiving.upload(first, "서울우유 1000ml 2박스 × 26,500원 = 53,000원\n")
+    assert receiving.confirm(first) == "재고 반영 완료"
+
+    product_api.update(
+        store=1, product_id=created["id"], changes={"base_unit_price": 2800}
+    )
+
+    # 이미 반영된 건: 단가 그대로
+    [done_line] = receiving.get(first)["lines"]
+    assert done_line["applied_unit_price"] == 2650
+
+    # 수정 뒤 확정하는 건: 새 기준 단가(1개당 2,800원)와 같으면 일반 건으로 반영된다
+    second = receiving.inspection_for_order(created["id"], 20)
+    receiving.upload(second, "서울우유 1000ml 2박스 × 28,000원 = 56,000원\n")
+    assert receiving.confirm(second) == "재고 반영 완료"
+    assert receiving.stock(created["id"]) == 20 + 20
+
+
+# US-08 인수 조건 #2 — 환산값·기준 단가 수정 (상품 쪽 저장).
+# '이후 확정 건부터 적용·재고 반영 완료 건은 그대로'는 위 두 테스트에서 확인한다.
 def test_us08_updated_conversion_qty_and_price_are_saved(product_api, product):
     created = product_api.create(store=1, product=product)
     product_api.update(
@@ -165,16 +325,15 @@ def test_us08_other_store_cannot_update_product(product_api, product):
     assert product_api.list_products(store=1) == [product]
 
 
-# US-08 — 매장 1이 아닌 매장에서 등록한 경우 (일부러 틀린 구현 시험에서 찾은 빈틈,
-# document 이슈 #139). 위 테스트는 모두 매장 1에서 등록해서, 등록할 때 사용자
-# 매장을 쓰지 않고 항상 매장 1에 저장하는 잘못을 잡지 못했다.
-# US-08 인수 조건 #1(정상): 저장하면 (그 매장의) 상품 목록에 추가된다
-def test_us08_product_created_in_store2_appears_in_store2_list(product_api, product):
-    product_api.create(store=2, product=product)
-    assert product in product_api.list_products(store=2)
-
-
-# US-08 인수 조건 #4(권한): 다른 매장 사용자는 이 매장의 상품 목록을 볼 수 없다
-def test_us08_store1_cannot_view_product_created_in_store2(product_api, product):
-    product_api.create(store=2, product=product)
-    assert product not in product_api.list_products(store=1)
+# 2026-11-16 멘토 데모 피드백 팀 답변("상품 등은 사장님만") 반영.
+# backlog US-08 '미확정'에는 아직 안 옮겨졌다.
+def test_us08_staff_cannot_update_product(product_api, product):
+    created = product_api.create(store=1, product=product)
+    response = product_api.client.patch(
+        f"/products/{created['id']}",
+        json={"base_unit_price": 1},
+        headers={"X-User-Id": "2"},  # store 1 직원 (conftest SEED_USERS)
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    assert product_api.list_products(store=1) == [product]
