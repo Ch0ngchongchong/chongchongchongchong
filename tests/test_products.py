@@ -67,6 +67,7 @@ def product():
         "conversion_qty": 10,
         "base_unit_price": 2650,
         "price_alert_threshold_percent": None,
+        "is_premium": False,
     }
 
 
