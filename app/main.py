@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from app import models  # noqa: F401  create_all()이 테이블을 알도록 모델을 불러온다
 from app.db import Base, engine
 from app.routers import (
+    auth,
     inspections,
     inventory,
     notifications,
@@ -29,6 +30,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="딱 재고 API", lifespan=lifespan)
+app.include_router(auth.router)
 app.include_router(products.router)
 app.include_router(purchase_orders.router)
 app.include_router(purchase_order_limits.router)
