@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.models.audit import ChangeHistory, DocumentContent, ExceptionPhoto, ReadingLog
 from app.models.inspection import Inspection
+from app.models.notification import Notification
 from app.models.product import Product
 from app.models.purchase_order import PurchaseOrder
 from app.models.receiving import (
@@ -486,6 +487,23 @@ def confirm_inspection(
         inspection.status = INSPECTION_STOCK_APPLIED
     else:
         inspection.status = INSPECTION_OWNER_APPROVAL
+        # 최종 금액이 발주의 금액 경고 기준을 넘은 예외 건은 사장님에게
+        # 능동적으로 알린다 (2026-11-16 멘토 데모 피드백 팀 결정의 "알람을
+        # 준다" 부분. 그 밖의 예외 사유는 알림을 만들지 않는다)
+        if evaluation.amount_over_limit:
+            owners = db.scalars(
+                select(StoreUser).where(
+                    StoreUser.store_id == user.store_id, StoreUser.role == "사장님"
+                )
+            ).all()
+            for owner in owners:
+                db.add(
+                    Notification(
+                        user_id=owner.id,
+                        inspection_id=inspection.id,
+                        message="최종 금액이 한도를 넘어 승인이 필요합니다",
+                    )
+                )
     db.add(
         ChangeHistory(
             inspection_id=inspection.id,
