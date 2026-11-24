@@ -24,6 +24,13 @@ class PurchaseOrder(Base):
     # 필수 여부 미정 (DATA-MODEL.md) — 정해질 때까지 빈 값을 허용한다
     supplier: Mapped[str | None] = mapped_column(String, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False)
+    # 이 발주의 최종 입고 금액이 이 값을 넘으면 입고 확정 때 사장 승인이
+    # 필요하다 (2026-11-16 멘토 데모 피드백 팀 결정: "최종 금액이 한도를
+    # 넘으면 알람을 준다"). 사장님이 발주 작성 때 직접 정한다. 비워 두면
+    # 보지 않는다. backlog.md에는 아직 반영되지 않았다.
+    amount_alert_threshold: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
 
     lines: Mapped[list["PurchaseOrderLine"]] = relationship(
         back_populates="purchase_order",

@@ -3,6 +3,7 @@ from datetime import datetime
 from sqlalchemy import (
     JSON,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     LargeBinary,
@@ -35,6 +36,18 @@ class ChangeHistory(Base):
     kind: Mapped[str] = mapped_column(String, nullable=False)
     old_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     new_value: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class ReadingLog(Base):
+    __tablename__ = "reading_logs"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    inspection_id: Mapped[int] = mapped_column(ForeignKey("inspections.id"), index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("inspection_documents.id"))
+    input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    cost: Mapped[float | None] = mapped_column(Float, nullable=True)
+    elapsed_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    outcome: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class ExceptionPhoto(Base):

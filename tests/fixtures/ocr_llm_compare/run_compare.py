@@ -170,16 +170,25 @@ def main():
         read_sec = time.perf_counter() - started
         masked = mask_sensitive(text)
         started = time.perf_counter()
-        draft = structurer.structure(masked, refs)
+        lines = structurer.structure(masked, refs)
         struct_sec = time.perf_counter() - started
+        # main(PR #28 이후): structure()는 줄 목록만 돌려주고, 합계·사용량은
+        # structurer 속성에 둔다. 작성일은 서버가 밖으로 넘기지 않아 채점하지 않는다
+        # (속성이 있으면 채점한다 — 실험 전용 table_rule)
+        draft = {
+            "lines": lines,
+            "document_date": getattr(structurer, "document_date", None),
+            "total_amount": getattr(structurer, "total_amount", None),
+        }
 
-        pairs, extra = match_lines(answer["lines"], draft.lines, code_of)
+        pairs, extra = match_lines(answer["lines"], lines, code_of)
         scores = [score_line(a, line, code_of) for a, line in pairs]
         n = len(scores)
         missing = sum(1 for _, line in pairs if line is None)
         hits = {f: sum(s[f] for s in scores) for f in FIELDS}
-        date_ok = draft.document_date == answer["document_date"]
-        total_ok = draft.total_amount == answer["total_amount"]
+        has_date = hasattr(structurer, "document_date")
+        date_ok = has_date and draft["document_date"] == answer["document_date"]
+        total_ok = draft["total_amount"] == answer["total_amount"]
         for f in FIELDS:
             totals[f] += hits[f]
         totals["lines"] += n
@@ -188,10 +197,11 @@ def main():
         totals["date"] += date_ok
         totals["total"] += total_ok
         for key in usage:
-            usage[key] += getattr(draft.usage, key) or 0
-        cells = [answer_path.stem, f"{len(draft.lines)}/{n}", missing, extra]
+            usage[key] += getattr(structurer, key, None) or 0
+        cells = [answer_path.stem, f"{len(lines)}/{n}", missing, extra]
         cells += [f"{hits[f]}/{n}" for f in FIELDS]
-        cells += [ox(date_ok), ox(total_ok), f"{read_sec:.1f}", f"{struct_sec:.2f}"]
+        cells += [ox(date_ok) if has_date else "-", ox(total_ok)]
+        cells += [f"{read_sec:.1f}", f"{struct_sec:.2f}"]
         rows.append("| " + " | ".join(str(c) for c in cells) + " |")
 
         if args.out:
@@ -200,7 +210,11 @@ def main():
             (args.out / f"{stem}.text.txt").write_text(text)
             (args.out / f"{stem}.masked.txt").write_text(masked)
             (args.out / f"{stem}.draft.json").write_text(
-                json.dumps(asdict(draft), ensure_ascii=False, indent=2)
+                json.dumps(
+                    {**draft, "lines": [asdict(line) for line in lines]},
+                    ensure_ascii=False,
+                    indent=2,
+                )
             )
 
     n, docs = totals["lines"], len(rows)
@@ -215,7 +229,8 @@ def main():
         print(f"- {label}: {pct(totals[key], n)}")
     print(f"- 행 누락률: {pct(totals['missing'], n)}")
     print(f"- 남는 줄(정답에 없는 줄): {totals['extra']}")
-    print(f"- 작성일: {pct(totals['date'], docs)}, 합계: {pct(totals['total'], docs)}")
+    date = pct(totals["date"], docs) if hasattr(structurer, "document_date") else "-"
+    print(f"- 작성일: {date}, 합계: {pct(totals['total'], docs)}")
     print(
         f"- LLM 사용량 합: 입력 {usage['input_tokens']} / "
         f"출력 {usage['output_tokens']} 토큰, 비용 {usage['cost']}"
