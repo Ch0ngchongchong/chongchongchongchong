@@ -43,6 +43,8 @@ class InspectionLineOut(BaseModel):
     product_id: int | None
     quantity: int | None
     unit: str | None
+    unit_price: int | None = None
+    amount: int | None = None
     # 단위를 환산할 수 없을 때 직원이 직접 넣은 기준 단위 수량 (US-05)
     manual_base_quantity: int | None = None
     # 직원이 파손을 표시함 → 예외 건 (US-04)
@@ -113,6 +115,11 @@ class InspectionLineUpdate(BaseModel):
     product_id: int | None = None
     quantity: int | None = None
     unit: str | None = None
+    # OCR·LLM이 잘못 읽은 단가·금액을 직원이 고친다 (US-07 정확도 지표의
+    # 비교 기준이 되는 '지금 고른 값'. read_unit_price·read_amount는
+    # 원본 그대로 둔다)
+    unit_price: int | None = None
+    amount: int | None = None
     # 단위를 환산할 수 없을 때 직원이 직접 넣는 기준 단위 수량 (US-05)
     manual_base_quantity: int | None = None
     # 직원이 파손을 표시함 → 예외 건 (US-04)

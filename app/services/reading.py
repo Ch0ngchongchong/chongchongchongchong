@@ -168,6 +168,8 @@ def run_reading(inspection_id: int) -> None:
                     product_id=top,
                     quantity=draft.quantity,
                     unit=draft.unit,
+                    unit_price=draft.unit_price,
+                    amount=draft.amount,
                     numbers_not_in_ocr=_has_number_not_in_ocr(draft, numbers_in_ocr),
                 )
             )
@@ -431,7 +433,7 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
     ]
 
     lines_amount_sum = sum(
-        check.line.read_amount for check in checks if check.line.read_amount is not None
+        check.line.amount for check in checks if check.line.amount is not None
     )
     summary_mismatch = (
         inspection.read_total_amount is not None
@@ -442,7 +444,7 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
     final_amount = sum(
         check.base_quantity * _base_unit_price(check.line, check.product)
         for check in checks
-        if check.base_quantity is not None and check.line.read_unit_price is not None
+        if check.base_quantity is not None and check.line.unit_price is not None
     )
     amount_over_limit = (
         order.amount_alert_threshold is not None
@@ -477,10 +479,11 @@ def _rule_violations(line: InspectionLine) -> list[str]:
 
 
 def _base_unit_price(line: InspectionLine, product: Product) -> int:
-    """읽은 단가를 기준 단위 1개당 단가로 바꾼다.
+    """지금 고른 단가(line.unit_price, 기본값은 OCR이 읽은 값과 같다. 직원이
+    PATCH로 고쳤으면 그 값)를 기준 단위 1개당 단가로 바꾼다.
     포장 단위 단가면 환산값으로 나눈다."""
     per_unit = to_base_quantity(1, line.unit, product)
-    return line.read_unit_price // per_unit if per_unit else line.read_unit_price
+    return line.unit_price // per_unit if per_unit else line.unit_price
 
 
 def _price_differs(line: InspectionLine, product: Product) -> bool:
@@ -489,7 +492,7 @@ def _price_differs(line: InspectionLine, product: Product) -> bool:
     조금이라도 다르면 다르다고 본다. 설정돼 있으면 기준 단가보다 그 비율
     이상 '높을 때만' 다르다고 본다 — 더 싸게 들어온 건 경고하지 않는다
     (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 상품마다 직접 설정)."""
-    if line.read_unit_price is None or product.base_unit_price is None:
+    if line.unit_price is None or product.base_unit_price is None:
         return False
     effective_price = _base_unit_price(line, product)
     threshold = product.price_alert_threshold_percent
@@ -517,7 +520,7 @@ def apply_stock(db: Session, inspection: Inspection, evaluation: Evaluation) -> 
         product = check.product
         check.line.applied_base_quantity = check.base_quantity
         check.line.applied_conversion_qty = product.conversion_qty
-        if check.line.read_unit_price is not None:
+        if check.line.unit_price is not None:
             product.base_unit_price = _base_unit_price(check.line, product)
         check.line.applied_unit_price = product.base_unit_price
 

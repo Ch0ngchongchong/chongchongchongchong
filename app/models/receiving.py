@@ -90,6 +90,10 @@ class InspectionLine(Base):
     )
     quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unit: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 지금 고른 단가·금액 (품목·수량·단위와 같은 축: read_* 가 틀렸으면 직원이
+    # PATCH로 고친다. 기본값은 read_unit_price·read_amount와 같다)
+    unit_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 단위를 환산할 수 없을 때 직원이 직접 넣은 기준 단위 수량 (US-05)
     manual_base_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 직원이 파손을 표시함 → 예외 건 (US-04)

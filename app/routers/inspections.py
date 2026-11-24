@@ -164,6 +164,8 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
                 "product_id": c.line.product_id,
                 "quantity": c.line.quantity,
                 "unit": c.line.unit,
+                "unit_price": c.line.unit_price,
+                "amount": c.line.amount,
                 "manual_base_quantity": c.line.manual_base_quantity,
                 "damaged": c.line.damaged,
                 # 재고 반영이 끝난 건은 그때 저장한 값을 보여 준다
@@ -380,6 +382,11 @@ def update_line(
     for name in ("quantity", "manual_base_quantity"):
         if name in changes and changes[name] is not None and changes[name] <= 0:
             return error_response(400, "INVALID_QUANTITY", "수량은 1 이상이어야 합니다")
+    for name in ("unit_price", "amount"):
+        if name in changes and changes[name] is not None and changes[name] <= 0:
+            return error_response(
+                400, "INVALID_UNIT_PRICE_OR_AMOUNT", "단가·금액은 0보다 커야 합니다"
+            )
     if changes.get("product_id") is not None:
         exists = db.scalar(
             select(Product.id).where(
@@ -581,12 +588,9 @@ def inspection_metrics(
     """판독 원본값과 직원 확정값을 비교한 필드별 정확도·고친 줄 비율·
     행 누락률·업로드~확정 시간 (US-07, 미팅1 피드백 8).
 
-    - 품목·수량·단위는 직원이 PATCH lines/{line_id}로 고칠 수 있는 필드라
-      판독 원본(candidates[0]·read_quantity·read_unit)과 비교해 정확도를 잰다.
-    - 단가·금액은 지금 직원이 고칠 수 있는 칸이 아니다(InspectionLineUpdate에
-      product_id·quantity·unit만 있다). 그래서 언제나 1.0이 나온다 — 실제로
-      틀릴 수 있게 고치는 기능이 생기면 다시 계산해야 한다(DATA-MODEL.md
-      '변경 이력에 어느 필드가 바뀌었는지' 아직 정하지 못한 것과 같은 결).
+    - 품목·수량·단위·단가·금액은 직원이 PATCH lines/{line_id}로 고칠 수 있는
+      필드라 판독 원본(candidates[0]·read_quantity·read_unit·read_unit_price·
+      read_amount)과 비교해 정확도를 잰다.
     - 행 누락률(직원이 추가한 줄 비율)은 '판독 원본' 이력에 없는 line_no를
       센다. 지금은 직원이 줄을 추가하는 API가 없어 항상 0이지만, 생기면
       이 계산은 바로 맞게 작동한다.
@@ -616,7 +620,8 @@ def inspection_metrics(
         if h.new_value
     }
 
-    item_matches = quantity_matches = unit_matches = corrected = added = 0
+    item_matches = quantity_matches = unit_matches = 0
+    unit_price_matches = amount_matches = corrected = added = 0
     for line in lines:
         top_candidate = line.candidates[0]["product_id"] if line.candidates else None
         if line.product_id == top_candidate:
@@ -625,10 +630,16 @@ def inspection_metrics(
             quantity_matches += 1
         if line.unit == line.read_unit:
             unit_matches += 1
+        if line.unit_price == line.read_unit_price:
+            unit_price_matches += 1
+        if line.amount == line.read_amount:
+            amount_matches += 1
         if (
             line.product_id != top_candidate
             or line.quantity != line.read_quantity
             or line.unit != line.read_unit
+            or line.unit_price != line.read_unit_price
+            or line.amount != line.read_amount
         ):
             corrected += 1
         if line.line_no not in original_line_nos:
@@ -662,8 +673,8 @@ def inspection_metrics(
             "품목": ratio(item_matches),
             "수량": ratio(quantity_matches),
             "단위": ratio(unit_matches),
-            "단가": ratio(total),
-            "금액": ratio(total),
+            "단가": ratio(unit_price_matches),
+            "금액": ratio(amount_matches),
         },
         "corrected_line_ratio": ratio(corrected),
         "added_line_ratio": ratio(added),
