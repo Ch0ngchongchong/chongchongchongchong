@@ -72,14 +72,6 @@ def create_product(
             "단가 경고 기준은 0 이상이어야 합니다",
         )
 
-    # R7 수량 한도는 0보다 커야 한다 (0 이하면 한도라는 의미가 없다)
-    if body.order_quantity_limit is not None and body.order_quantity_limit <= 0:
-        return error_response(
-            400,
-            "INVALID_ORDER_QUANTITY_LIMIT",
-            "발주 수량 한도는 0보다 커야 합니다",
-        )
-
     # ① 같은 매장에 상품 코드가 이미 있으면 저장하지 않는다 (US-08)
     exists = db.scalar(
         select(Product.id).where(
@@ -168,15 +160,6 @@ def update_product(
             400,
             "INVALID_PRICE_ALERT_THRESHOLD",
             "단가 경고 기준은 0 이상이어야 합니다",
-        )
-
-    # R7 수량 한도는 0보다 커야 한다
-    order_quantity_limit = changes.get("order_quantity_limit")
-    if order_quantity_limit is not None and order_quantity_limit <= 0:
-        return error_response(
-            400,
-            "INVALID_ORDER_QUANTITY_LIMIT",
-            "발주 수량 한도는 0보다 커야 합니다",
         )
 
     # ① 바꾸려는 상품 코드가 같은 매장의 다른 상품에 있으면 저장하지 않는다 (US-08)

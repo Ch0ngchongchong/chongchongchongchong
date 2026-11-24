@@ -4,7 +4,11 @@ from app.models.audit import ChangeHistory, DocumentContent, ExceptionPhoto, Rea
 from app.models.inspection import Inspection
 from app.models.notification import Notification
 from app.models.product import Product
-from app.models.purchase_order import PurchaseOrder, PurchaseOrderLine
+from app.models.purchase_order import (
+    PurchaseOrder,
+    PurchaseOrderLimit,
+    PurchaseOrderLine,
+)
 from app.models.receiving import InspectionDocument, InspectionLine, Inventory
 from app.models.user import StoreUser
 
@@ -20,6 +24,7 @@ __all__ = [
     "Notification",
     "Product",
     "PurchaseOrder",
+    "PurchaseOrderLimit",
     "PurchaseOrderLine",
     "StoreUser",
 ]

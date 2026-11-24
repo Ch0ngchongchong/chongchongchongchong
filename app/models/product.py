@@ -33,8 +33,3 @@ class Product(Base):
     price_alert_threshold_percent: Mapped[int | None] = mapped_column(
         Integer, nullable=True
     )
-    # 한 번의 발주에서 이 상품 수량 한도 (R7, 2026-11-16 멘토 데모 피드백 팀
-    # 결정: R8과 같이 상품별로 사장님이 직접 설정). 넘으면 발주 승인 전에
-    # 경고하고 다시 확인해야 승인된다 (US-01). 비워 두면 한도를 보지 않는다.
-    # backlog.md US-01에는 아직 반영되지 않았다.
-    order_quantity_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)

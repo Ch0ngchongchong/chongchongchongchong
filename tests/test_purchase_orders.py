@@ -1,7 +1,7 @@
 # US-01 발주 작성·승인·전달 / US-02 공급처 전달 전 발주 취소 (F-02)
 # 사용자: conftest.py 시드 — 1 = 매장 1 사장님, 2 = 매장 1 직원, 3 = 매장 2 사장님
 # R7 수량 한도 경고는 2026-11-16 멘토 데모 피드백 팀 결정을 반영해 만들었다
-# (Product.order_quantity_limit, 사장님이 상품마다 직접 설정).
+# (/purchase-order-limits에 상품명·단위로 저장, 사장님이 상품마다 직접 설정).
 # '재고가 바뀌지 않는다'(R3)는 재고 모델이 아직 없어, 재고를 바꾸는 코드가
 # 발주 API에 없다는 것으로만 확인된다 (US-04 재고 반영을 만들 때 테스트 추가).
 
@@ -22,7 +22,11 @@ def product_id(client):
     # DATA-MODEL.md 시드 #2
     response = client.post(
         "/products",
-        json={"product_code": "P-0123", "name": "서울우유 1000ml"},
+        json={
+            "product_code": "P-0123",
+            "name": "서울우유 1000ml",
+            "base_unit": "개",
+        },
         headers=OWNER,
     )
     assert response.status_code == 200, response.text
@@ -175,9 +179,9 @@ def test_us01_other_store_product_counts_as_unregistered(client, product_id):
 def test_us01_quantity_over_limit_blocks_approval_until_acknowledged(
     client, product_id
 ):
-    client.patch(
-        f"/products/{product_id}",
-        json={"order_quantity_limit": 5},
+    client.post(
+        "/purchase-order-limits",
+        json={"product": "서울우유 1000ml", "limit": 5, "unit": "개"},
         headers=OWNER,
     )
     response = client.post(
@@ -204,9 +208,9 @@ def test_us01_quantity_over_limit_blocks_approval_until_acknowledged(
 def test_us01_quantity_within_limit_approves_without_acknowledgement(
     client, product_id
 ):
-    client.patch(
-        f"/products/{product_id}",
-        json={"order_quantity_limit": 20},
+    client.post(
+        "/purchase-order-limits",
+        json={"product": "서울우유 1000ml", "limit": 20, "unit": "개"},
         headers=OWNER,
     )
     response = client.post(
