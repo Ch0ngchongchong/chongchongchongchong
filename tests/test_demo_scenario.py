@@ -409,6 +409,43 @@ def test_final_amount_over_limit_goes_to_owner_approval(client, product_id):
     assert _stock(client, product_id) == 0
 
 
+def test_final_amount_over_limit_notifies_owner(client, product_id):
+    response = client.post(
+        "/purchase-orders",
+        json={
+            "supplier": "(가상) 유제품 공급처 A",
+            "lines": [{"product_id": product_id, "quantity": 10}],
+            "amount_alert_threshold": 20000,
+        },
+        headers=OWNER,
+    )
+    order_id = response.json()["id"]
+    assert client.post(f"/purchase-orders/{order_id}/approve", headers=OWNER).is_success
+    assert client.post(
+        f"/purchase-orders/{order_id}/mark-delivered", headers=OWNER
+    ).is_success
+    new_inspection_id = client.get(
+        "/inspections", params={"status": "업로드 대기"}, headers=STAFF
+    ).json()[0]["id"]
+
+    before = client.get("/notifications", headers=OWNER).json()
+    _upload(client, new_inspection_id, MATCHING_STATEMENT.encode())
+    client.post(
+        f"/inspections/{new_inspection_id}/confirm",
+        headers=STAFF,
+        json={"reason": "금액 한도 초과 확인"},
+    )
+
+    notifications = client.get("/notifications", headers=OWNER).json()
+    assert len(notifications) == len(before) + 1
+    new_notification = notifications[-1]
+    assert new_notification["inspection_id"] == new_inspection_id
+    assert "금액" in new_notification["message"]
+    assert new_notification["read_at"] is None
+    # 직원에게는 가지 않는다 (사장님만 승인·반려할 수 있는 건이라서)
+    assert client.get("/notifications", headers=STAFF).json() == []
+
+
 def test_final_amount_within_limit_does_not_need_owner_approval(client, product_id):
     response = client.post(
         "/purchase-orders",
