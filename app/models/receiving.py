@@ -76,17 +76,24 @@ class InspectionLine(Base):
     line_no: Mapped[int] = mapped_column(Integer, nullable=False)
 
     read_name: Mapped[str] = mapped_column(String, nullable=False)
+    read_spec: Mapped[str | None] = mapped_column(String, nullable=True)
     read_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     read_unit: Mapped[str | None] = mapped_column(String, nullable=True)
     read_unit_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
     read_amount: Mapped[int | None] = mapped_column(Integer, nullable=True)
     candidates: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # LLM이 확신하지 못한 필드 이름. 그 필드 값은 추측하지 않고 비워 둔다 (US-03)
+    uncertain_fields: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
     product_id: Mapped[int | None] = mapped_column(
         ForeignKey("products.id"), nullable=True
     )
     quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     unit: Mapped[str | None] = mapped_column(String, nullable=True)
+    # 단위를 환산할 수 없을 때 직원이 직접 넣은 기준 단위 수량 (US-05)
+    manual_base_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # 직원이 파손을 표시함 → 예외 건 (US-04)
+    damaged: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     applied_base_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
     applied_conversion_qty: Mapped[int | None] = mapped_column(Integer, nullable=True)

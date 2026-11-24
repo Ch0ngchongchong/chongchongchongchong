@@ -25,6 +25,7 @@ class ReadValuesOut(BaseModel):
     """OCR이 읽은 값 그대로 (고치지 않음)"""
 
     name: str
+    spec: str | None = None
     quantity: int | None
     unit: str | None
     unit_price: int | None
@@ -36,14 +37,20 @@ class InspectionLineOut(BaseModel):
     line_no: int
     read: ReadValuesOut
     candidates: list[CandidateOut]
+    # LLM이 확신하지 못해 비워 둔 필드 이름 (US-03). 추측값은 넣지 않는다
+    uncertain_fields: list[str] = []
     # 지금 고른 값 (처음엔 1순위 후보·읽은 수량)
     product_id: int | None
     quantity: int | None
     unit: str | None
+    # 단위를 환산할 수 없을 때 직원이 직접 넣은 기준 단위 수량 (US-05)
+    manual_base_quantity: int | None = None
+    # 직원이 파손을 표시함 → 예외 건 (US-04)
+    damaged: bool = False
     # 기준 단위로 바꾼 수량과 발주 수량
     base_quantity: int | None
     order_quantity: int | None
-    # 일치 / 확인 필요 / 발주에 없음 / 수량 다름 / 단가 다름
+    # 일치 / 확인 필요 / 발주에 없음 / 수량 다름 / 단가 다름 / 파손
     match_status: str
     # 규칙 검증 실패 칸: AMOUNT_MISMATCH(수량×단가≠금액) · NUMBER_NOT_IN_OCR
     # (OCR 글자에 없는 숫자). 비어 있으면 통과
@@ -57,6 +64,15 @@ class MissingOrderLineOut(BaseModel):
     order_quantity: int
 
 
+class ShortOrderLineOut(BaseModel):
+    """발주보다 적게 들어온 줄 (0개보다는 많지만 발주 수량에 못 미침, US-06)"""
+
+    product_id: int
+    order_quantity: int
+    received_quantity: int
+    short_quantity: int
+
+
 class InspectionOut(BaseModel):
     id: int
     purchase_order_id: int
@@ -68,6 +84,8 @@ class InspectionOut(BaseModel):
     document: DocumentOut | None
     lines: list[InspectionLineOut]
     missing_order_lines: list[MissingOrderLineOut]
+    # 발주보다 적게 들어온 줄 (승인 뒤 미입고로 남는 수량, US-06)
+    short_order_lines: list[ShortOrderLineOut] = []
     # 직원이 채워야 하는 칸 수. 0이어야 확정할 수 있다
     check_count: int
     # 발주와 모두 같으면 true (확정하면 바로 재고 반영)
@@ -85,11 +103,17 @@ class InspectionOut(BaseModel):
 
 
 class InspectionLineUpdate(BaseModel):
-    """직원이 품목 후보를 고르거나 수량을 고칠 때. 보낸 필드만 바뀐다."""
+    """직원이 품목 후보를 고르거나 수량을 고칠 때. 보낸 필드만 바뀐다.
+    고치면(새 값이 기존과 달라도) 그 줄의 강조 칸(후보 여러 개·규칙 검증 실패)을
+    확인한 것으로 본다. checked를 직접 보내면 그 값을 따른다."""
 
     product_id: int | None = None
     quantity: int | None = None
     unit: str | None = None
+    # 단위를 환산할 수 없을 때 직원이 직접 넣는 기준 단위 수량 (US-05)
+    manual_base_quantity: int | None = None
+    # 직원이 파손을 표시함 → 예외 건 (US-04)
+    damaged: bool | None = None
     # 규칙 검증 실패 칸을 확인했다는 표시 (US-03 안전장치)
     checked: bool | None = None
 

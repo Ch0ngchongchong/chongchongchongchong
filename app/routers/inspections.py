@@ -153,15 +153,19 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
                 "line_no": c.line.line_no,
                 "read": {
                     "name": c.line.read_name,
+                    "spec": c.line.read_spec,
                     "quantity": c.line.read_quantity,
                     "unit": c.line.read_unit,
                     "unit_price": c.line.read_unit_price,
                     "amount": c.line.read_amount,
                 },
                 "candidates": c.line.candidates,
+                "uncertain_fields": c.line.uncertain_fields,
                 "product_id": c.line.product_id,
                 "quantity": c.line.quantity,
                 "unit": c.line.unit,
+                "manual_base_quantity": c.line.manual_base_quantity,
+                "damaged": c.line.damaged,
                 # 재고 반영이 끝난 건은 그때 저장한 값을 보여 준다
                 "base_quantity": c.line.applied_base_quantity
                 if c.line.applied_base_quantity is not None
@@ -176,6 +180,15 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
         "missing_order_lines": [
             {"product_id": m.product_id, "order_quantity": m.order_quantity}
             for m in evaluation.missing
+        ],
+        "short_order_lines": [
+            {
+                "product_id": g.product_id,
+                "order_quantity": g.order_quantity,
+                "received_quantity": g.received_quantity,
+                "short_quantity": g.short_quantity,
+            }
+            for g in evaluation.short
         ],
         "check_count": evaluation.check_count,
         "all_match": evaluation.all_match,
@@ -363,8 +376,8 @@ def update_line(
         return error_response(404, "LINE_NOT_FOUND", "판독 줄을 찾을 수 없습니다")
 
     changes = body.model_dump(exclude_unset=True)
-    if "quantity" in changes and changes["quantity"] is not None:
-        if changes["quantity"] <= 0:
+    for name in ("quantity", "manual_base_quantity"):
+        if name in changes and changes[name] is not None and changes[name] <= 0:
             return error_response(400, "INVALID_QUANTITY", "수량은 1 이상이어야 합니다")
     if changes.get("product_id") is not None:
         exists = db.scalar(
@@ -377,6 +390,12 @@ def update_line(
             return error_response(
                 400, "UNREGISTERED_PRODUCT", "등록되지 않은 상품이 있습니다"
             )
+    # 고치면 그 줄의 강조 칸을 확인한 것으로 본다. checked를 직접 보내면
+    # (false 포함) 그 값을 따른다
+    for name in ("damaged", "checked"):
+        if name in changes and changes[name] is None:
+            changes.pop(name)
+    changes.setdefault("checked", True)
     for field, value in changes.items():
         old = getattr(line, field)
         if old != value:

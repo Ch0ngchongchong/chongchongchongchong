@@ -193,7 +193,6 @@ def _llm_returns_text(monkeypatch, output_text):
 # ---------- (정상) 줄마다 품목명·규격·수량·단위·단가·금액 ----------
 
 
-@NOT_IMPLEMENTED
 def test_us03_each_line_shows_spec(monkeypatch, client, product_id, inspection_id):
     # US-03 (정상) 각 줄이 품목명·규격·수량·단위·단가·금액과 품목 후보로 표시된다
     _llm_returns(monkeypatch, _document())
@@ -207,7 +206,6 @@ def test_us03_each_line_shows_spec(monkeypatch, client, product_id, inspection_i
 # ---------- (정상) 불확실한 값·규칙 검증 실패 칸은 추측값 없이 빈칸으로 강조 ----------
 
 
-@NOT_IMPLEMENTED
 def test_us03_uncertain_value_is_blank_and_highlighted(
     monkeypatch, client, product_id, inspection_id
 ):
@@ -223,7 +221,6 @@ def test_us03_uncertain_value_is_blank_and_highlighted(
     assert draft["check_count"] == 1
 
 
-@NOT_IMPLEMENTED
 def test_us03_quantity_times_price_not_amount_is_highlighted(
     client, product_id, inspection_id
 ):
@@ -238,7 +235,6 @@ def test_us03_quantity_times_price_not_amount_is_highlighted(
     assert draft["all_match"] is False
 
 
-@NOT_IMPLEMENTED
 def test_us03_line_amounts_not_total_is_highlighted(client, product_id, inspection_id):
     # US-03 (정상) 규칙 검증 실패 칸(줄 금액 합≠합계)은 강조 표시된다
     # 줄 금액 26,500인데 합계가 30,000

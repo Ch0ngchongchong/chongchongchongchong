@@ -28,9 +28,8 @@ PAPER_CUP_WITHOUT_CONVERSION = {**PAPER_CUP, "conversion_qty": None}
 
 
 @pytest.fixture(autouse=True)
-def upload_dir(tmp_path, monkeypatch):
-    monkeypatch.setenv("UPLOAD_DIR", str(tmp_path))
-    return tmp_path
+def allow_text_upload(monkeypatch):
+    monkeypatch.setenv("ALLOW_TEXT_UPLOAD", "1")
 
 
 def _create_product(client, product, headers=OWNER):

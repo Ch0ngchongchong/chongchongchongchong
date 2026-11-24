@@ -149,7 +149,6 @@ def _llm_returns(monkeypatch, document):
 # ---------- (정상) 예외 건이면 `사장 승인 대기`, 재고는 그대로 ----------
 
 
-@NOT_IMPLEMENTED
 def test_us04_damaged_line_goes_to_owner_approval(client, product_id, inspection_id):
     # US-04 (정상) 확정한 내용에 파손이 하나라도 있으면(예외 건) `사장 승인 대기`가
     # 되고 재고는 바뀌지 않는다. 파손 표시 방법은 PR #8 API 문서의
@@ -192,7 +191,6 @@ def test_us04_order_line_missing_in_statement_goes_to_owner_approval(client):
 # ---------- (실패·거절) 강조된 칸이 확인되지 않았으면 확정할 수 없다 ----------
 
 
-@NOT_IMPLEMENTED
 def test_us04_multiple_candidates_must_be_checked_before_confirm(
     client, product_id, inspection_id
 ):
@@ -214,7 +212,6 @@ def test_us04_multiple_candidates_must_be_checked_before_confirm(
     assert response.json()["status"] == "재고 반영 완료"
 
 
-@NOT_IMPLEMENTED
 def test_us04_rule_check_failure_blocks_confirm(client, product_id, inspection_id):
     # US-04 (실패·거절) 규칙 검증 실패 칸(수량×단가≠금액)이 확인되지 않았으면
     # 확정할 수 없다. 10 × 2,650 = 26,500인데 금액이 30,000
@@ -229,7 +226,6 @@ def test_us04_rule_check_failure_blocks_confirm(client, product_id, inspection_i
     assert _stock(client, product_id) == 0
 
 
-@NOT_IMPLEMENTED
 def test_us04_uncertain_value_must_be_filled_before_confirm(
     monkeypatch, client, product_id, inspection_id
 ):

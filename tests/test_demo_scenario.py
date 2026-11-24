@@ -128,6 +128,7 @@ def test_demo_happy_path(client, product_id, order_id, inspection_id):
     [line] = draft["lines"]
     assert line["read"] == {
         "name": "서울우유 1000ml",
+        "spec": None,
         "quantity": 10,
         "unit": "개",
         "unit_price": 2650,

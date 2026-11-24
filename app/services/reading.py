@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.db import SessionLocal
 from app.models.audit import ChangeHistory, DocumentContent, ReadingLog
 from app.models.inspection import Inspection
+from app.models.notification import Notification
 from app.models.product import Product
 from app.models.purchase_order import ORDER_RECEIVED, PurchaseOrder
 from app.models.receiving import (
@@ -40,6 +41,7 @@ MATCH_NEEDS_CHECK = "확인 필요"  # 품목이나 수량이 비어 있어 직�
 MATCH_NOT_IN_ORDER = "발주에 없음"
 MATCH_QTY_DIFF = "수량 다름"
 MATCH_PRICE_DIFF = "단가 다름"
+MATCH_DAMAGED = "파손"  # 직원이 파손을 표시함 (US-04)
 MATCH_MISSING_IN_STATEMENT = "명세서에 없음"  # 발주 줄인데 명세서에 없음
 
 # 규칙 검증 실패 칸 (US-03 안전장치, 미팅1 피드백 6)
@@ -106,9 +108,8 @@ def run_reading(inspection_id: int) -> None:
             if not isinstance(exc, OcrError):
                 logging.exception("명세서 판독 실패")
                 exc = OcrError("명세서를 판독하지 못했습니다")
-            # 판독 실패: `업로드 대기`로 돌아가고,
-            # 다시 올려 달라는 안내를 남긴다 (US-03)
-            # 알림 발송 자체는 아직 없다. 화면이 폴링으로 read_error를 보여 준다.
+            # 판독 실패: `업로드 대기`로 돌아가고, 올린 직원에게 다시 올려 달라는
+            # 알림을 남긴다 (US-03). 화면은 폴링으로 read_error도 볼 수 있다.
             db.rollback()
             inspection.status = INSPECTION_STATUS_UPLOAD_WAITING
             if document is not None:
@@ -128,6 +129,13 @@ def run_reading(inspection_id: int) -> None:
                         outcome="실패",
                     )
                 )
+                db.add(
+                    Notification(
+                        user_id=document.uploaded_by,
+                        inspection_id=inspection_id,
+                        message=document.read_error,
+                    )
+                )
             db.commit()
             return
 
@@ -143,6 +151,7 @@ def run_reading(inspection_id: int) -> None:
                     inspection_id=inspection_id,
                     line_no=no,
                     read_name=draft.name,
+                    read_spec=draft.spec,
                     read_quantity=draft.quantity,
                     read_unit=draft.unit,
                     read_unit_price=draft.unit_price,
@@ -155,6 +164,7 @@ def run_reading(inspection_id: int) -> None:
                         }
                         for c in draft.candidates
                     ],
+                    uncertain_fields=list(draft.uncertain_fields),
                     product_id=top,
                     quantity=draft.quantity,
                     unit=draft.unit,
@@ -236,6 +246,20 @@ class MissingOrderLine:
 
 
 @dataclass
+class OrderGap:
+    """발주보다 적게 들어온 줄 (0개보다는 많지만 발주 수량에 못 미침, US-06).
+    0개 들어온 줄은 missing_order_lines로 따로 보인다."""
+
+    product_id: int
+    order_quantity: int
+    received_quantity: int
+
+    @property
+    def short_quantity(self) -> int:
+        return self.order_quantity - self.received_quantity
+
+
+@dataclass
 class Evaluation:
     lines: list[LineCheck]
     missing: list[MissingOrderLine]
@@ -247,42 +271,60 @@ class Evaluation:
     # 최종 금액이 발주의 amount_alert_threshold를 넘으면 true (2026-11-16
     # 멘토 데모 피드백 팀 결정: "최종 금액이 한도를 넘으면 알람을 준다")
     amount_over_limit: bool = False
+    short: list[OrderGap] = field(default_factory=list)
+
+    @staticmethod
+    def _unresolved(check: "LineCheck") -> bool:
+        """규칙 검증 실패·후보 여러 개를 직원이 아직 확인하지 않았는지
+        (US-03 안전장치, US-04 후보 여러 개)."""
+        return not check.line.checked and bool(
+            check.rule_violations or len(check.line.candidates) >= 2
+        )
 
     @property
     def check_count(self) -> int:
         """직원이 채워야 확정할 수 있는 칸 수 (품목 미선택·수량 없음·
-        규칙 검증 실패 미확인·합계 불일치 미확인)."""
+        규칙 검증 실패·후보 여러 개 미확인·합계 불일치 미확인)."""
         needs_check = sum(1 for c in self.lines if c.status == MATCH_NEEDS_CHECK)
-        unresolved_violations = sum(
-            1 for c in self.lines if c.rule_violations and not c.line.checked
-        )
+        unresolved_lines = sum(1 for c in self.lines if self._unresolved(c))
         unresolved_summary = (
             1 if (self.summary_mismatch and not self.summary_checked) else 0
         )
-        return needs_check + unresolved_violations + unresolved_summary
+        return needs_check + unresolved_lines + unresolved_summary
 
     @property
     def all_match(self) -> bool:
+        unresolved_lines = any(self._unresolved(c) for c in self.lines)
+        unresolved_summary = self.summary_mismatch and not self.summary_checked
         return (
             not self.missing
             and all(c.status == MATCH_OK for c in self.lines)
             and not self.amount_over_limit
+            and not unresolved_lines
+            and not unresolved_summary
         )
 
 
-def remaining_quantities(db: Session, order: PurchaseOrder) -> dict[int, int]:
+def remaining_quantities(
+    db: Session, order: PurchaseOrder, *, before_inspection_id: int | None = None
+) -> dict[int, int]:
+    """발주 줄마다 아직 안 들어온 수량. before_inspection_id를 주면 그 검수 건
+    자신(과 그 뒤에 생긴 검수 건)이 반영한 몫은 빼지 않는다 — 확정·승인
+    직후(재고는 이미 반영됐지만) 이 건 기준으로 얼마가 부족했는지 보여 줄 때 쓴다."""
     remaining = {}
     for line in order.lines:
         remaining[line.product_id] = remaining.get(line.product_id, 0) + line.quantity
-    rows = db.execute(
+    query = (
         select(InspectionLine.product_id, InspectionLine.applied_base_quantity)
         .join(Inspection, Inspection.id == InspectionLine.inspection_id)
         .where(
             Inspection.purchase_order_id == order.id,
             InspectionLine.applied_base_quantity.is_not(None),
         )
-    ).all()
-    for product_id, quantity in rows:
+    )
+    if before_inspection_id is not None:
+        query = query.where(Inspection.id < before_inspection_id)
+    for product_id, quantity in db.execute(query).all():
         if product_id in remaining:
             remaining[product_id] = max(0, remaining[product_id] - quantity)
     return remaining
@@ -292,7 +334,9 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
     order = db.get(PurchaseOrder, inspection.purchase_order_id)
     ordered = {
         product_id: qty
-        for product_id, qty in remaining_quantities(db, order).items()
+        for product_id, qty in remaining_quantities(
+            db, order, before_inspection_id=inspection.id
+        ).items()
         if qty > 0
     }
 
@@ -330,7 +374,7 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
     for line in lines:
         violations = _rule_violations(line)
         product = get_product(line.product_id)
-        if (
+        unresolved = (
             product is None
             or line.quantity is None
             or line.quantity <= 0
@@ -342,12 +386,19 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
                 and not product.conversion_qty
             )
             or product.id in mixed_unit_products
-        ):
+        )
+        # 단위를 환산할 수 없을 때 직원이 직접 넣은 기준 단위 수량으로 대신한다
+        # (US-05 안전장치). 품목은 반드시 골라야 알 수 있다
+        if unresolved and product is not None and line.manual_base_quantity is not None:
+            unresolved = False
+            base = line.manual_base_quantity
+        elif not unresolved:
+            base = to_base_quantity(line.quantity, line.unit, product)
+        if unresolved:
             checks.append(
                 LineCheck(line, product, None, None, MATCH_NEEDS_CHECK, violations)
             )
             continue
-        base = to_base_quantity(line.quantity, line.unit, product)
         received[product.id] = received.get(product.id, 0) + base
         checks.append(
             LineCheck(line, product, base, ordered.get(product.id), "", violations)
@@ -357,7 +408,9 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
         if check.status:
             continue
         product = check.product
-        if product.id not in ordered:
+        if check.line.damaged:
+            check.status = MATCH_DAMAGED
+        elif product.id not in ordered:
             check.status = MATCH_NOT_IN_ORDER
         elif received[product.id] != ordered[product.id]:
             check.status = MATCH_QTY_DIFF
@@ -370,6 +423,11 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
         MissingOrderLine(product_id, qty)
         for product_id, qty in ordered.items()
         if product_id not in received
+    ]
+    short = [
+        OrderGap(product_id, qty, received[product_id])
+        for product_id, qty in ordered.items()
+        if product_id in received and received[product_id] < qty
     ]
 
     lines_amount_sum = sum(
@@ -397,6 +455,7 @@ def evaluate(db: Session, inspection: Inspection) -> Evaluation:
         inspection.summary_checked,
         final_amount,
         amount_over_limit,
+        short,
     )
 
 
