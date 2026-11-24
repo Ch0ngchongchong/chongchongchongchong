@@ -67,7 +67,6 @@ def product():
         "conversion_qty": 10,
         "base_unit_price": 2650,
         "price_alert_threshold_percent": None,
-        "order_quantity_limit": None,
     }
 
 
@@ -112,19 +111,6 @@ def test_us08_update_to_negative_price_alert_threshold_is_rejected(
     )
     assert response.json()["error"]["code"] == "INVALID_PRICE_ALERT_THRESHOLD"
     assert product_api.list_products(store=1) == [product]
-
-
-# R7 수량 한도(order_quantity_limit)는 0 이하면 저장되지 않는다
-# (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 상품마다 직접 설정)
-@pytest.mark.parametrize("limit", [0, -1])
-def test_us08_nonpositive_order_quantity_limit_is_rejected(
-    product_api, product, limit
-):
-    product["order_quantity_limit"] = limit
-    before = product_api.list_products(store=1)
-    response = product_api.create_rejected(store=1, product=product)
-    assert response.json()["error"]["code"] == "INVALID_ORDER_QUANTITY_LIMIT"
-    assert product_api.list_products(store=1) == before
 
 
 def test_us08_other_store_cannot_view_product(product_api, product):

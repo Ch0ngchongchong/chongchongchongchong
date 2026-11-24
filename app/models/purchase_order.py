@@ -54,3 +54,19 @@ class PurchaseOrderLine(Base):
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
 
     purchase_order: Mapped[PurchaseOrder] = relationship(back_populates="lines")
+
+
+class PurchaseOrderLimit(Base):
+    """R7 발주 수량 한도 (2026-11-16 멘토 데모 피드백 팀 결정: 상품별로 사장님이
+    직접 설정). product_id가 아니라 상품명·단위로 저장한다
+    (Ch0ngchongchong/frontend README 계약). 발주 승인 때 발주 줄의 상품 이름·
+    기준 단위가 같은 한도를 찾아 비교한다 — 상품을 나중에 고쳐도 한도 자체는
+    그대로 남고, 이름이 바뀌면 더는 맞지 않게 된다."""
+
+    __tablename__ = "purchase_order_limits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    store_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    product: Mapped[str] = mapped_column(String, nullable=False)
+    limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit: Mapped[str] = mapped_column(String, nullable=False)

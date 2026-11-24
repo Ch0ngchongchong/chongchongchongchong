@@ -2,7 +2,8 @@
 # API.md에 아직 항목이 없다. 경로·오류 코드·HTTP 상태 코드는 항목 1과 같은 규칙으로
 # 맞춘 [제안]이며 PM이 API.md에 옮겨야 한다.
 # R7 수량 한도 경고는 2026-11-16 멘토 데모 피드백 팀 결정(R8과 같이 상품별로
-# 사장님이 직접 설정)을 반영해 만들었다 (Product.order_quantity_limit).
+# 사장님이 직접 설정)을 반영해 만들었다. 한도는 /purchase-order-limits에
+# 상품명·단위로 저장한다 (Ch0ngchongchong/frontend README 계약).
 # 만들지 않은 것: 발주 줄 단위·발주 번호·작성일(DATA-MODEL.md에 없음),
 # `발주 확인 완료`에서의 취소(미정, US-02).
 # 재고는 이 파일의 어느 API에서도 바꾸지 않는다 (R3).
@@ -20,6 +21,7 @@ from app.models.purchase_order import (
     ORDER_CONFIRMED,
     ORDER_DRAFT,
     PurchaseOrder,
+    PurchaseOrderLimit,
     PurchaseOrderLine,
 )
 from app.models.user import StoreUser
@@ -155,8 +157,9 @@ def approve_purchase_order(
     db: Session = Depends(get_db),
 ):
     """`발주 초안` → `발주 확인 완료` (US-01 정상).
-    R7: 상품별 수량 한도(Product.order_quantity_limit)를 넘는 줄이 있으면
-    경고로 막고, acknowledge_quantity_limit:true로 다시 요청해야 승인된다."""
+    R7: /purchase-order-limits에 저장된 상품별 수량 한도(상품명·단위로 찾는다)를
+    넘는 줄이 있으면 경고로 막고, acknowledge_quantity_limit:true로 다시
+    요청해야 승인된다."""
     if (denied := _forbidden_unless_owner(user)) is not None:
         return denied
     order = _find_order(db, order_id, user)
@@ -169,8 +172,17 @@ def approve_purchase_order(
         line.product_id
         for line in order.lines
         if (product := db.get(Product, line.product_id)) is not None
-        and product.order_quantity_limit is not None
-        and line.quantity > product.order_quantity_limit
+        and (
+            quantity_limit := db.scalar(
+                select(PurchaseOrderLimit.limit).where(
+                    PurchaseOrderLimit.store_id == user.store_id,
+                    PurchaseOrderLimit.product == product.name,
+                    PurchaseOrderLimit.unit == product.base_unit,
+                )
+            )
+        )
+        is not None
+        and line.quantity > quantity_limit
     ]
     if over_limit and not (body and body.acknowledge_quantity_limit):
         return error_response(
