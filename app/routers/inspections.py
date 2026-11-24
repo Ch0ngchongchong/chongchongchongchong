@@ -170,6 +170,7 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
                 "base_quantity": c.line.applied_base_quantity
                 if c.line.applied_base_quantity is not None
                 else c.base_quantity,
+                "applied_unit_price": c.line.applied_unit_price,
                 "order_quantity": c.order_quantity,
                 "match_status": c.status,
                 "rule_violations": c.rule_violations,
