@@ -229,6 +229,65 @@ def test_price_difference_goes_to_owner_approval(client, product_id, inspection_
 
 # R8: price_alert_threshold_percent를 사장님이 설정하면, 그 비율 안에서는
 # 단가가 달라도 경고하지 않는다 (2026-11-16 멘토 데모 피드백 팀 결정)
+def test_staff_corrects_misread_unit_price_before_confirm(
+    client, product_id, inspection_id
+):
+    # OCR·LLM이 단가를 잘못 읽어 '단가 다름'이 됐지만, 직원이 실제 단가로
+    # 고치면 발주와 다시 맞아 사장 승인 없이 확정된다
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,900원\n".encode())
+    [line] = _get(client, inspection_id)["lines"]
+    assert line["match_status"] == "단가 다름"
+
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"unit_price": 2650},
+        headers=STAFF,
+    )
+    assert _get(client, inspection_id)["lines"][0]["match_status"] == "일치"
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.json()["status"] == "재고 반영 완료"
+    assert _stock(client, product_id) == 10
+
+
+def test_staff_corrects_misread_amount_resolves_summary_mismatch(
+    client, product_id, inspection_id
+):
+    # 줄 금액을 잘못 읽어 합계와 달랐지만(규칙 검증 실패), 직원이 실제
+    # 금액으로 고치면 합계가 다시 맞아 summary-check 없이도 확정된다
+    statement = "서울우유 1000ml 10개 × 2,650원 = 26,000원\n합계 26,500원\n"
+    _upload(client, inspection_id, statement.encode())
+    draft = _get(client, inspection_id)
+    assert draft["summary_mismatch"] is True
+    [line] = draft["lines"]
+
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"amount": 26500},
+        headers=STAFF,
+    )
+    assert _get(client, inspection_id)["summary_mismatch"] is False
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.json()["status"] == "재고 반영 완료"
+    assert _stock(client, product_id) == 10
+
+
+@pytest.mark.parametrize("value", [0, -1])
+def test_nonpositive_unit_price_or_amount_update_is_rejected(
+    client, inspection_id, value
+):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    [line] = _get(client, inspection_id)["lines"]
+    response = client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"unit_price": value},
+        headers=STAFF,
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_UNIT_PRICE_OR_AMOUNT"
+
+
 def test_price_within_threshold_does_not_need_owner_approval(
     client, product_id, inspection_id
 ):
@@ -779,6 +838,22 @@ def test_metrics_reflect_corrected_unknown_item(client, product_id, inspection_i
     assert metrics["field_accuracy"]["품목"] == 0.0
     assert metrics["field_accuracy"]["수량"] == 1.0
     assert metrics["field_accuracy"]["단위"] == 1.0
+    assert metrics["corrected_line_ratio"] == 1.0
+
+
+def test_metrics_reflect_corrected_unit_price(client, product_id, inspection_id):
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,900원\n".encode())
+    [line] = _get(client, inspection_id)["lines"]
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"unit_price": 2650},
+        headers=STAFF,
+    )
+    client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    metrics = client.get(f"/inspections/{inspection_id}/metrics", headers=OWNER).json()
+    # 단가는 고쳐서 틀렸다고 센다. 금액은 명세서에 없어(None == None) 맞다고 센다
+    assert metrics["field_accuracy"]["단가"] == 0.0
+    assert metrics["field_accuracy"]["금액"] == 1.0
     assert metrics["corrected_line_ratio"] == 1.0
 
 
