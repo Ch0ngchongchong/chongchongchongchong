@@ -49,6 +49,9 @@ class InspectionLineOut(BaseModel):
     damaged: bool = False
     # 기준 단위로 바꾼 수량과 발주 수량
     base_quantity: int | None
+    # 확정해서 재고에 반영될 때 저장한 기준 단위 단가 (US-08 인수 조건 #2).
+    # 확정 전이면 아직 저장된 값이 없어 비어 있다
+    applied_unit_price: int | None = None
     order_quantity: int | None
     # 일치 / 확인 필요 / 발주에 없음 / 수량 다름 / 단가 다름 / 파손
     match_status: str
