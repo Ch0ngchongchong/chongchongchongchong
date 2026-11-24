@@ -66,6 +66,8 @@ def product():
         "pack_unit": "박스",
         "conversion_qty": 10,
         "base_unit_price": 2650,
+        "price_alert_threshold_percent": None,
+        "order_quantity_limit": None,
     }
 
 
@@ -86,6 +88,42 @@ def test_us08_nonpositive_conversion_qty_is_rejected(product_api, product, quant
     product["conversion_qty"] = quantity
     before = product_api.list_products(store=1)
     product_api.create_rejected(store=1, product=product)
+    assert product_api.list_products(store=1) == before
+
+
+# R8 경고 기준(price_alert_threshold_percent)은 음수면 저장되지 않는다
+# (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 상품마다 직접 설정)
+def test_us08_negative_price_alert_threshold_is_rejected(product_api, product):
+    product["price_alert_threshold_percent"] = -1
+    before = product_api.list_products(store=1)
+    response = product_api.create_rejected(store=1, product=product)
+    assert response.json()["error"]["code"] == "INVALID_PRICE_ALERT_THRESHOLD"
+    assert product_api.list_products(store=1) == before
+
+
+def test_us08_update_to_negative_price_alert_threshold_is_rejected(
+    product_api, product
+):
+    created = product_api.create(store=1, product=product)
+    response = product_api.update_rejected(
+        store=1,
+        product_id=created["id"],
+        changes={"price_alert_threshold_percent": -5},
+    )
+    assert response.json()["error"]["code"] == "INVALID_PRICE_ALERT_THRESHOLD"
+    assert product_api.list_products(store=1) == [product]
+
+
+# R7 수량 한도(order_quantity_limit)는 0 이하면 저장되지 않는다
+# (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 상품마다 직접 설정)
+@pytest.mark.parametrize("limit", [0, -1])
+def test_us08_nonpositive_order_quantity_limit_is_rejected(
+    product_api, product, limit
+):
+    product["order_quantity_limit"] = limit
+    before = product_api.list_products(store=1)
+    response = product_api.create_rejected(store=1, product=product)
+    assert response.json()["error"]["code"] == "INVALID_ORDER_QUANTITY_LIMIT"
     assert product_api.list_products(store=1) == before
 
 
@@ -165,16 +203,15 @@ def test_us08_other_store_cannot_update_product(product_api, product):
     assert product_api.list_products(store=1) == [product]
 
 
-# US-08 — 매장 1이 아닌 매장에서 등록한 경우 (일부러 틀린 구현 시험에서 찾은 빈틈,
-# document 이슈 #139). 위 테스트는 모두 매장 1에서 등록해서, 등록할 때 사용자
-# 매장을 쓰지 않고 항상 매장 1에 저장하는 잘못을 잡지 못했다.
-# US-08 인수 조건 #1(정상): 저장하면 (그 매장의) 상품 목록에 추가된다
-def test_us08_product_created_in_store2_appears_in_store2_list(product_api, product):
-    product_api.create(store=2, product=product)
-    assert product in product_api.list_products(store=2)
-
-
-# US-08 인수 조건 #4(권한): 다른 매장 사용자는 이 매장의 상품 목록을 볼 수 없다
-def test_us08_store1_cannot_view_product_created_in_store2(product_api, product):
-    product_api.create(store=2, product=product)
-    assert product not in product_api.list_products(store=1)
+# 2026-11-16 멘토 데모 피드백 팀 답변("상품 등은 사장님만") 반영.
+# backlog US-08 '미확정'에는 아직 안 옮겨졌다.
+def test_us08_staff_cannot_update_product(product_api, product):
+    created = product_api.create(store=1, product=product)
+    response = product_api.client.patch(
+        f"/products/{created['id']}",
+        json={"base_unit_price": 1},
+        headers={"X-User-Id": "2"},  # store 1 직원 (conftest SEED_USERS)
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    assert product_api.list_products(store=1) == [product]

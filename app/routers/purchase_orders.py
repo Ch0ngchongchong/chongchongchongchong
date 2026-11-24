@@ -1,8 +1,10 @@
 # 발주 작성·승인·전달·취소·조회 엔드포인트 (US-01·US-02 / F-02)
 # API.md에 아직 항목이 없다. 경로·오류 코드·HTTP 상태 코드는 항목 1과 같은 규칙으로
 # 맞춘 [제안]이며 PM이 API.md에 옮겨야 한다.
-# 만들지 않은 것: R7 수량 한도 경고(한도 값 미정), 발주 줄 단위·발주 번호·작성일
-# (DATA-MODEL.md에 없음), `발주 확인 완료`에서의 취소(미정, US-02).
+# R7 수량 한도 경고는 2026-11-16 멘토 데모 피드백 팀 결정(R8과 같이 상품별로
+# 사장님이 직접 설정)을 반영해 만들었다 (Product.order_quantity_limit).
+# 만들지 않은 것: 발주 줄 단위·발주 번호·작성일(DATA-MODEL.md에 없음),
+# `발주 확인 완료`에서의 취소(미정, US-02).
 # 재고는 이 파일의 어느 API에서도 바꾸지 않는다 (R3).
 
 from fastapi import APIRouter, Depends
@@ -22,7 +24,11 @@ from app.models.purchase_order import (
 )
 from app.models.user import StoreUser
 from app.routers.products import error_response, forbidden_unless_role, get_current_user
-from app.schemas.purchase_order import PurchaseOrderCreate, PurchaseOrderOut
+from app.schemas.purchase_order import (
+    PurchaseOrderApprove,
+    PurchaseOrderCreate,
+    PurchaseOrderOut,
+)
 from app.services.reading import remaining_quantities
 
 router = APIRouter(prefix="/purchase-orders", tags=["purchase-orders"])
@@ -89,10 +95,22 @@ def create_purchase_order(
             400, "UNREGISTERED_PRODUCT", "등록되지 않은 상품이 있습니다"
         )
 
+    # 최종 금액 경고 기준은 0보다 커야 한다 (2026-11-16 멘토 피드백 팀 결정)
+    if (
+        body.amount_alert_threshold is not None
+        and body.amount_alert_threshold <= 0
+    ):
+        return error_response(
+            400,
+            "INVALID_AMOUNT_ALERT_THRESHOLD",
+            "최종 금액 경고 기준은 0보다 커야 합니다",
+        )
+
     order = PurchaseOrder(
         store_id=user.store_id,
         supplier=body.supplier,
         status=ORDER_DRAFT,
+        amount_alert_threshold=body.amount_alert_threshold,
         lines=[
             PurchaseOrderLine(product_id=line.product_id, quantity=line.quantity)
             for line in body.lines
@@ -132,11 +150,13 @@ def get_purchase_order(
 @router.post("/{order_id}/approve", response_model=PurchaseOrderOut)
 def approve_purchase_order(
     order_id: int,
+    body: PurchaseOrderApprove | None = None,
     user: StoreUser = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """`발주 초안` → `발주 확인 완료` (US-01 정상).
-    R7 한도 초과 경고는 한도 값이 미정이라 아직 검사하지 않는다."""
+    R7: 상품별 수량 한도(Product.order_quantity_limit)를 넘는 줄이 있으면
+    경고로 막고, acknowledge_quantity_limit:true로 다시 요청해야 승인된다."""
     if (denied := _forbidden_unless_owner(user)) is not None:
         return denied
     order = _find_order(db, order_id, user)
@@ -144,6 +164,21 @@ def approve_purchase_order(
         return _not_found()
     if order.status != ORDER_DRAFT:
         return _invalid_status(order)
+
+    over_limit = [
+        line.product_id
+        for line in order.lines
+        if (product := db.get(Product, line.product_id)) is not None
+        and product.order_quantity_limit is not None
+        and line.quantity > product.order_quantity_limit
+    ]
+    if over_limit and not (body and body.acknowledge_quantity_limit):
+        return error_response(
+            400,
+            "QUANTITY_LIMIT_EXCEEDED",
+            "수량 한도를 넘는 상품이 있습니다. 다시 확인한 뒤 승인해 주세요",
+        )
+
     order.status = ORDER_CONFIRMED
     db.commit()
     db.refresh(order)

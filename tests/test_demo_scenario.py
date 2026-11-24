@@ -8,6 +8,7 @@ import pytest
 OWNER = {"X-User-Id": "1"}
 STAFF = {"X-User-Id": "2"}
 OTHER_STORE_OWNER = {"X-User-Id": "3"}
+OTHER_STAFF = {"X-User-Id": "4"}  # store 1의 또 다른 직원 (담당 아님)
 
 SEOUL_MILK = {
     "product_code": "P-0123",
@@ -225,6 +226,118 @@ def test_price_difference_goes_to_owner_approval(client, product_id, inspection_
     assert _stock(client, product_id) == 0
 
 
+# R8: price_alert_threshold_percent를 사장님이 설정하면, 그 비율 안에서는
+# 단가가 달라도 경고하지 않는다 (2026-11-16 멘토 데모 피드백 팀 결정)
+def test_price_within_threshold_does_not_need_owner_approval(
+    client, product_id, inspection_id
+):
+    client.patch(
+        f"/products/{product_id}",
+        json={"price_alert_threshold_percent": 10},
+        headers=OWNER,
+    )
+    # 기준 단가 2,650원보다 9.4% 높음 (10% 기준 안쪽)
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,900원\n".encode())
+    assert _get(client, inspection_id)["lines"][0]["match_status"] == "일치"
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.json()["status"] == "재고 반영 완료"
+    assert _stock(client, product_id) == 10
+
+
+def test_price_above_threshold_still_goes_to_owner_approval(
+    client, product_id, inspection_id
+):
+    client.patch(
+        f"/products/{product_id}",
+        json={"price_alert_threshold_percent": 10},
+        headers=OWNER,
+    )
+    # 기준 단가 2,650원보다 13.2% 높음 (10% 기준 초과)
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 3,000원\n".encode())
+    assert _get(client, inspection_id)["lines"][0]["match_status"] == "단가 다름"
+    response = client.post(
+        f"/inspections/{inspection_id}/confirm",
+        headers=STAFF,
+        json={"reason": "단가 차이 확인"},
+    )
+    assert response.json()["status"] == "사장 승인 대기"
+    assert _stock(client, product_id) == 0
+
+
+def test_lower_price_with_threshold_is_not_flagged(client, product_id, inspection_id):
+    # 기준 단가보다 낮게 들어온 건 경고하지 않는다 (더 싸게 들어온 것)
+    client.patch(
+        f"/products/{product_id}",
+        json={"price_alert_threshold_percent": 10},
+        headers=OWNER,
+    )
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,000원\n".encode())
+    assert _get(client, inspection_id)["lines"][0]["match_status"] == "일치"
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.json()["status"] == "재고 반영 완료"
+
+
+# 최종 금액 초과 알림 (2026-11-16 멘토 데모 피드백 팀 결정: 사장님이 발주마다
+# amount_alert_threshold를 직접 정한다)
+def test_final_amount_over_limit_goes_to_owner_approval(client, product_id):
+    response = client.post(
+        "/purchase-orders",
+        json={
+            "supplier": "(가상) 유제품 공급처 A",
+            "lines": [{"product_id": product_id, "quantity": 10}],
+            "amount_alert_threshold": 20000,
+        },
+        headers=OWNER,
+    )
+    order_id = response.json()["id"]
+    assert client.post(f"/purchase-orders/{order_id}/approve", headers=OWNER).is_success
+    assert client.post(
+        f"/purchase-orders/{order_id}/mark-delivered", headers=OWNER
+    ).is_success
+    listed = client.get(
+        "/inspections", params={"status": "업로드 대기"}, headers=STAFF
+    ).json()
+    assert len(listed) == 1
+    new_inspection_id = listed[0]["id"]
+
+    # 10개 × 2,650원 = 26,500원 (한도 20,000원 초과)
+    _upload(client, new_inspection_id, MATCHING_STATEMENT.encode())
+    draft = _get(client, new_inspection_id)
+    assert draft["final_amount"] == 26500
+    assert draft["amount_over_limit"] is True
+    assert draft["all_match"] is False
+
+    response = client.post(
+        f"/inspections/{new_inspection_id}/confirm",
+        headers=STAFF,
+        json={"reason": "금액 한도 초과 확인"},
+    )
+    assert response.json()["status"] == "사장 승인 대기"
+    assert _stock(client, product_id) == 0
+
+
+def test_final_amount_within_limit_does_not_need_owner_approval(client, product_id):
+    response = client.post(
+        "/purchase-orders",
+        json={
+            "lines": [{"product_id": product_id, "quantity": 10}],
+            "amount_alert_threshold": 30000,
+        },
+        headers=OWNER,
+    )
+    order_id = response.json()["id"]
+    client.post(f"/purchase-orders/{order_id}/approve", headers=OWNER)
+    client.post(f"/purchase-orders/{order_id}/mark-delivered", headers=OWNER)
+    new_inspection_id = client.get(
+        "/inspections", params={"status": "업로드 대기"}, headers=STAFF
+    ).json()[0]["id"]
+
+    _upload(client, new_inspection_id, MATCHING_STATEMENT.encode())
+    assert _get(client, new_inspection_id)["amount_over_limit"] is False
+    response = client.post(f"/inspections/{new_inspection_id}/confirm", headers=STAFF)
+    assert response.json()["status"] == "재고 반영 완료"
+
+
 def test_pack_unit_is_converted_to_base_unit(client, product_id, inspection_id):
     # 1박스 = 10개 (환산값). 박스 단가 26,500원 = 개당 2,650원
     _upload(client, inspection_id, "서울우유 1000ml 1박스 × 26,500원\n".encode())
@@ -233,6 +346,70 @@ def test_pack_unit_is_converted_to_base_unit(client, product_id, inspection_id):
     assert line["match_status"] == "일치"
     client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
     assert _stock(client, product_id) == 10
+
+
+def test_mixed_units_for_same_product_need_check(client, product_id, inspection_id):
+    # 같은 상품이 개·박스로 섞여 있으면 구분할 수 없어 자동 환산하지 않는다
+    # (US-05, 미팅1 피드백 5, R6)
+    statement = (
+        "서울우유 1000ml 5개 × 2,650원\n서울우유 1000ml 1박스 × 26,500원\n"
+    )
+    _upload(client, inspection_id, statement.encode())
+    draft = _get(client, inspection_id)
+    assert [line["match_status"] for line in draft["lines"]] == [
+        "확인 필요",
+        "확인 필요",
+    ]
+    assert draft["check_count"] == 2
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CHECK_REQUIRED"
+
+
+def test_add_line_for_missed_item_fixes_quantity_mismatch(
+    client, product_id, inspection_id
+):
+    # OCR이 품목 한 줄을 덜 읽어 수량이 모자라면, 직원이 빠진 줄을 추가해
+    # 발주와 맞출 수 있다 (US-04 인수 조건, 미팅1 질의 3)
+    _upload(client, inspection_id, "서울우유 1000ml 7개 × 2,650원\n".encode())
+    draft = _get(client, inspection_id)
+    assert len(draft["lines"]) == 1
+    assert draft["lines"][0]["match_status"] == "수량 다름"
+
+    response = client.post(
+        f"/inspections/{inspection_id}/lines",
+        json={"product_id": product_id, "quantity": 3, "unit": "개"},
+        headers=STAFF,
+    )
+    assert response.status_code == 200, response.text
+    lines = response.json()["lines"]
+    assert len(lines) == 2
+    assert [line["match_status"] for line in lines] == ["일치", "일치"]
+
+    history = client.get(f"/inspections/{inspection_id}/history", headers=OWNER).json()
+    assert any(h["kind"] == "직원이 추가한 줄" for h in history)
+
+    metrics = client.get(f"/inspections/{inspection_id}/metrics", headers=OWNER).json()
+    assert metrics["line_count"] == 2
+    assert metrics["added_line_ratio"] == 0.5
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 200, response.text
+    assert _stock(client, product_id) == 10
+
+
+def test_add_line_requires_assigned_employee_or_owner(
+    client, product_id, inspection_id
+):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode(), headers=STAFF)
+    response = client.post(
+        f"/inspections/{inspection_id}/lines",
+        json={"product_id": product_id, "quantity": 1, "unit": "개"},
+        headers=OTHER_STAFF,
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
 
 
 def test_read_failure_returns_to_upload_waiting(client, product_id, inspection_id):
@@ -258,6 +435,34 @@ def test_other_store_cannot_see_or_touch_inspection(client, inspection_id):
     )
     assert response.status_code == 404
     assert _get(client, inspection_id)["status"] == "업로드 대기"
+
+
+# 2026-11-16 멘토 데모 피드백 팀 결정: "직원은 담당(처음 올린) 입고 건만 다룰 수 있다"
+def test_other_staff_cannot_touch_assigned_inspection(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode(), headers=STAFF)
+    response = client.patch(
+        f"/inspections/{inspection_id}/lines/1", json={}, headers=OTHER_STAFF
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    response = client.post(
+        f"/inspections/{inspection_id}/confirm", headers=OTHER_STAFF
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    # 담당 직원은 그대로 확정할 수 있다
+    assert (
+        client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF).status_code
+        == 200
+    )
+
+
+def test_owner_can_touch_any_staffs_inspection(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode(), headers=STAFF)
+    assert (
+        client.post(f"/inspections/{inspection_id}/confirm", headers=OWNER).status_code
+        == 200
+    )
 
 
 # ---------- 직원 확인 ----------
@@ -435,6 +640,156 @@ def test_exception_photos_are_store_scoped(client, inspection_id):
         ).status_code
         == 404
     )
+
+
+# ---------- 규칙 검증 실패 칸 (US-03 안전장치, 미팅1 피드백 6) ----------
+
+
+def test_amount_mismatch_blocks_confirm_until_checked(
+    client, product_id, inspection_id
+):
+    _upload(
+        client,
+        inspection_id,
+        "서울우유 1000ml 10개 × 2,650원 = 20,000원\n".encode(),
+    )
+    line = _get(client, inspection_id)["lines"][0]
+    assert line["rule_violations"] == ["AMOUNT_MISMATCH"]
+    assert line["checked"] is False
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CHECK_REQUIRED"
+
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"checked": True},
+        headers=STAFF,
+    )
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "재고 반영 완료"
+
+
+def test_number_not_in_ocr_is_flagged(
+    client, product_id, inspection_id, monkeypatch
+):
+    from app.services import reading
+    from app.services.structurer import Candidate, DraftLine
+
+    class FakeStructurer:
+        total_amount = None
+
+        def structure(self, masked_text, products):
+            return [
+                DraftLine(
+                    name="서울우유 1000ml",
+                    quantity=10,
+                    unit="개",
+                    unit_price=2650,
+                    amount=99999,  # OCR 글자(아래 명세서)에 없는 숫자
+                    candidates=[Candidate(product_id, 1.0, "테스트 후보")],
+                )
+            ]
+
+    monkeypatch.setattr(reading, "get_structurer", lambda: FakeStructurer())
+    _upload(client, inspection_id, "서울우유 1000ml 10개 × 2,650원\n".encode())
+    line = _get(client, inspection_id)["lines"][0]
+    assert "NUMBER_NOT_IN_OCR" in line["rule_violations"]
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CHECK_REQUIRED"
+
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"checked": True},
+        headers=STAFF,
+    )
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 200, response.text
+
+
+def test_summary_mismatch_blocks_confirm_until_summary_checked(
+    client, product_id, inspection_id
+):
+    statement = "서울우유 1000ml 10개 × 2,650원 = 26,500원\n합계 30,000원\n"
+    _upload(client, inspection_id, statement.encode())
+    draft = _get(client, inspection_id)
+    assert draft["total_amount"] == 30000
+    assert draft["summary_mismatch"] is True
+    assert draft["summary_checked"] is False
+
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "CHECK_REQUIRED"
+
+    client.post(f"/inspections/{inspection_id}/summary-check", headers=STAFF)
+    response = client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    assert response.status_code == 200, response.text
+
+
+def test_summary_check_requires_assigned_employee_or_owner(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode(), headers=STAFF)
+    response = client.post(
+        f"/inspections/{inspection_id}/summary-check", headers=OTHER_STAFF
+    )
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    assert (
+        client.post(
+            f"/inspections/{inspection_id}/summary-check", headers=OWNER
+        ).status_code
+        == 200
+    )
+
+
+# ---------- 정확도 지표 (US-07, 미팅1 피드백 8) ----------
+
+
+def test_metrics_for_perfect_match(client, product_id, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    metrics = client.get(f"/inspections/{inspection_id}/metrics", headers=OWNER).json()
+    assert metrics["line_count"] == 1
+    assert metrics["field_accuracy"] == {
+        "품목": 1.0,
+        "수량": 1.0,
+        "단위": 1.0,
+        "단가": 1.0,
+        "금액": 1.0,
+    }
+    assert metrics["corrected_line_ratio"] == 0.0
+    assert metrics["added_line_ratio"] == 0.0
+    assert metrics["upload_to_confirm_seconds"] >= 0
+
+
+def test_metrics_reflect_corrected_unknown_item(client, product_id, inspection_id):
+    _upload(client, inspection_id, "알 수 없는 품목 10개 × 2,650원\n".encode())
+    [line] = _get(client, inspection_id)["lines"]
+    client.patch(
+        f"/inspections/{inspection_id}/lines/{line['id']}",
+        json={"product_id": product_id},
+        headers=STAFF,
+    )
+    client.post(f"/inspections/{inspection_id}/confirm", headers=STAFF)
+    metrics = client.get(f"/inspections/{inspection_id}/metrics", headers=OWNER).json()
+    # 후보가 없어 직원이 고른 품목만 정확도에서 틀렸다고 센다
+    assert metrics["field_accuracy"]["품목"] == 0.0
+    assert metrics["field_accuracy"]["수량"] == 1.0
+    assert metrics["field_accuracy"]["단위"] == 1.0
+    assert metrics["corrected_line_ratio"] == 1.0
+
+
+def test_metrics_only_owner_can_view(client, inspection_id):
+    _upload(client, inspection_id, MATCHING_STATEMENT.encode())
+    response = client.get(f"/inspections/{inspection_id}/metrics", headers=STAFF)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "FORBIDDEN_ROLE"
+    response = client.get(
+        f"/inspections/{inspection_id}/metrics", headers=OTHER_STORE_OWNER
+    )
+    assert response.status_code == 404
 
 
 def test_openai_structurer_sends_masked_text_and_records_usage(

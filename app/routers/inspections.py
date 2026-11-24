@@ -16,6 +16,8 @@
 # 업로드·확정을 직원만 할 수 있는지는 정하지 않아 역할로 막지 않는다.
 
 
+from datetime import timezone
+
 from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -37,7 +39,12 @@ from app.models.receiving import (
 )
 from app.models.user import StoreUser
 from app.routers.products import error_response, forbidden_unless_role, get_current_user
-from app.schemas.inspection import InspectionLineUpdate, InspectionOut, ReasonInput
+from app.schemas.inspection import (
+    InspectionLineCreate,
+    InspectionLineUpdate,
+    InspectionOut,
+    ReasonInput,
+)
 from app.services.reading import (
     apply_stock,
     evaluate,
@@ -82,6 +89,22 @@ def _invalid_status(inspection: Inspection):
         "INVALID_STATUS_TRANSITION",
         f"지금 상태({inspection.status})에서는 할 수 없습니다",
     )
+
+
+def _forbidden_unless_assigned(user: StoreUser, inspection: Inspection):
+    """사장님은 모든 검수 건을 다룰 수 있다. 직원은 담당(처음 명세서를 올린)
+    검수 건만 다룰 수 있다 (2026-11-16 멘토 데모 피드백 팀 결정).
+    담당자가 아직 없으면(사장님이 올렸거나 업로드 전) 막지 않는다."""
+    if user.role == "사장님":
+        return None
+    if (
+        inspection.assigned_employee_id is not None
+        and inspection.assigned_employee_id != user.id
+    ):
+        return error_response(
+            403, "FORBIDDEN_ROLE", "다른 직원이 담당하는 입고 건입니다"
+        )
+    return None
 
 
 def _to_out(db: Session, inspection: Inspection) -> dict:
@@ -145,6 +168,8 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
                 else c.base_quantity,
                 "order_quantity": c.order_quantity,
                 "match_status": c.status,
+                "rule_violations": c.rule_violations,
+                "checked": c.line.checked,
             }
             for c in evaluation.lines
         ],
@@ -154,6 +179,11 @@ def _to_out(db: Session, inspection: Inspection) -> dict:
         ],
         "check_count": evaluation.check_count,
         "all_match": evaluation.all_match,
+        "total_amount": inspection.read_total_amount,
+        "summary_mismatch": evaluation.summary_mismatch,
+        "summary_checked": evaluation.summary_checked,
+        "final_amount": evaluation.final_amount,
+        "amount_over_limit": evaluation.amount_over_limit,
     }
 
 
@@ -202,6 +232,8 @@ def upload_document(
     inspection = _find(db, inspection_id, user, lock=True)
     if inspection is None:
         return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
     if inspection.status != INSPECTION_STATUS_UPLOAD_WAITING:
         return _invalid_status(inspection)
 
@@ -231,11 +263,77 @@ def upload_document(
     db.add(document)
     db.flush()
     db.add(DocumentContent(document_id=document.id, data=data))
+    if inspection.assigned_employee_id is None and user.role == "직원":
+        inspection.assigned_employee_id = user.id
     inspection.status = INSPECTION_READING
     db.commit()
     db.refresh(inspection)
 
     background_tasks.add_task(run_reading, inspection.id)
+    return _to_out(db, inspection)
+
+
+@router.post("/{inspection_id}/lines", response_model=InspectionOut)
+def add_line(
+    inspection_id: int,
+    body: InspectionLineCreate,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """판독 결과에 없는 줄을 직원이 추가한다 (US-04 인수 조건, 미팅1 질의 3
+    줄 누락·피드백 8 행 누락률). OCR이 읽은 값이 없으니 read_* 는 비워 두고,
+    '판독 원본' 이력이 없는 줄로 남아 정확도 지표의 행 누락률에 그대로
+    잡힌다(PR #15 added_line_ratio)."""
+    inspection = _find(db, inspection_id, user, lock=True)
+    if inspection is None:
+        return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
+    if inspection.status != INSPECTION_STAFF_REVIEW:
+        return _invalid_status(inspection)
+    if body.quantity <= 0:
+        return error_response(400, "INVALID_QUANTITY", "수량은 1 이상이어야 합니다")
+    product = db.scalar(
+        select(Product).where(
+            Product.id == body.product_id, Product.store_id == user.store_id
+        )
+    )
+    if product is None:
+        return error_response(
+            400, "UNREGISTERED_PRODUCT", "등록되지 않은 상품이 있습니다"
+        )
+
+    existing_lines = db.scalars(
+        select(InspectionLine).where(InspectionLine.inspection_id == inspection.id)
+    ).all()
+    next_line_no = max((line.line_no for line in existing_lines), default=0) + 1
+
+    line = InspectionLine(
+        inspection_id=inspection.id,
+        line_no=next_line_no,
+        read_name=product.name or product.product_code,
+        product_id=product.id,
+        quantity=body.quantity,
+        unit=body.unit or product.base_unit,
+    )
+    db.add(line)
+    db.flush()
+    db.add(
+        ChangeHistory(
+            inspection_id=inspection.id,
+            changed_by=user.id,
+            kind="직원이 추가한 줄",
+            new_value={
+                "line_id": line.id,
+                "line_no": next_line_no,
+                "product_id": product.id,
+                "quantity": body.quantity,
+                "unit": line.unit,
+            },
+        )
+    )
+    db.commit()
+    db.refresh(inspection)
     return _to_out(db, inspection)
 
 
@@ -252,6 +350,8 @@ def update_line(
     inspection = _find(db, inspection_id, user, lock=True)
     if inspection is None:
         return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
     if inspection.status != INSPECTION_STAFF_REVIEW:
         return _invalid_status(inspection)
     line = db.scalar(
@@ -294,6 +394,37 @@ def update_line(
     return _to_out(db, inspection)
 
 
+@router.post("/{inspection_id}/summary-check", response_model=InspectionOut)
+def check_summary(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """줄 금액 합≠합계(규칙 검증 실패)를 확인했다고 표시한다. `직원 확인 대기`에서만
+    된다. PR #8 설명에서 약속했던 'PATCH /inspections/{id}/summary'에 해당하는
+    기능인데 실제로는 없었다 — 이번에 새로 만들었다."""
+    inspection = _find(db, inspection_id, user, lock=True)
+    if inspection is None:
+        return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
+    if inspection.status != INSPECTION_STAFF_REVIEW:
+        return _invalid_status(inspection)
+    if not inspection.summary_checked:
+        inspection.summary_checked = True
+        db.add(
+            ChangeHistory(
+                inspection_id=inspection.id,
+                changed_by=user.id,
+                kind="합계 확인",
+                old_value={"summary_checked": False},
+                new_value={"summary_checked": True},
+            )
+        )
+        db.commit()
+    return _to_out(db, inspection)
+
+
 @router.post("/{inspection_id}/confirm", response_model=InspectionOut)
 def confirm_inspection(
     inspection_id: int,
@@ -308,6 +439,8 @@ def confirm_inspection(
     inspection = _find(db, inspection_id, user, lock=True)
     if inspection is None:
         return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
     if inspection.status != INSPECTION_STAFF_REVIEW:
         return _invalid_status(inspection)
 
@@ -419,6 +552,105 @@ def reading_logs(
     ]
 
 
+@router.get("/{inspection_id}/metrics")
+def inspection_metrics(
+    inspection_id: int,
+    user: StoreUser = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """판독 원본값과 직원 확정값을 비교한 필드별 정확도·고친 줄 비율·
+    행 누락률·업로드~확정 시간 (US-07, 미팅1 피드백 8).
+
+    - 품목·수량·단위는 직원이 PATCH lines/{line_id}로 고칠 수 있는 필드라
+      판독 원본(candidates[0]·read_quantity·read_unit)과 비교해 정확도를 잰다.
+    - 단가·금액은 지금 직원이 고칠 수 있는 칸이 아니다(InspectionLineUpdate에
+      product_id·quantity·unit만 있다). 그래서 언제나 1.0이 나온다 — 실제로
+      틀릴 수 있게 고치는 기능이 생기면 다시 계산해야 한다(DATA-MODEL.md
+      '변경 이력에 어느 필드가 바뀌었는지' 아직 정하지 못한 것과 같은 결).
+    - 행 누락률(직원이 추가한 줄 비율)은 '판독 원본' 이력에 없는 line_no를
+      센다. 지금은 직원이 줄을 추가하는 API가 없어 항상 0이지만, 생기면
+      이 계산은 바로 맞게 작동한다.
+    """
+    inspection = _find(db, inspection_id, user)
+    if inspection is None:
+        return _not_found()
+    denied = forbidden_unless_role(
+        user, "사장님", message="사장님만 조회할 수 있습니다"
+    )
+    if denied is not None:
+        return denied
+
+    lines = db.scalars(
+        select(InspectionLine).where(InspectionLine.inspection_id == inspection_id)
+    ).all()
+    total = len(lines)
+
+    original_line_nos = {
+        h.new_value["line_no"]
+        for h in db.scalars(
+            select(ChangeHistory).where(
+                ChangeHistory.inspection_id == inspection_id,
+                ChangeHistory.kind == "판독 원본",
+            )
+        ).all()
+        if h.new_value
+    }
+
+    item_matches = quantity_matches = unit_matches = corrected = added = 0
+    for line in lines:
+        top_candidate = line.candidates[0]["product_id"] if line.candidates else None
+        if line.product_id == top_candidate:
+            item_matches += 1
+        if line.quantity == line.read_quantity:
+            quantity_matches += 1
+        if line.unit == line.read_unit:
+            unit_matches += 1
+        if (
+            line.product_id != top_candidate
+            or line.quantity != line.read_quantity
+            or line.unit != line.read_unit
+        ):
+            corrected += 1
+        if line.line_no not in original_line_nos:
+            added += 1
+
+    def ratio(count: int) -> float | None:
+        return None if total == 0 else count / total
+
+    confirm_entry = db.scalar(
+        select(ChangeHistory)
+        .where(
+            ChangeHistory.inspection_id == inspection_id,
+            ChangeHistory.kind == "직원 확정",
+        )
+        .order_by(ChangeHistory.id.desc())
+    )
+    document = latest_document(db, inspection_id)
+    upload_to_confirm_seconds = None
+    if confirm_entry is not None and document is not None:
+        upload_to_confirm_seconds = max(
+            0,
+            (
+                confirm_entry.changed_at.replace(tzinfo=timezone.utc)
+                - document.uploaded_at.replace(tzinfo=timezone.utc)
+            ).total_seconds(),
+        )
+
+    return {
+        "line_count": total,
+        "field_accuracy": {
+            "품목": ratio(item_matches),
+            "수량": ratio(quantity_matches),
+            "단위": ratio(unit_matches),
+            "단가": ratio(total),
+            "금액": ratio(total),
+        },
+        "corrected_line_ratio": ratio(corrected),
+        "added_line_ratio": ratio(added),
+        "upload_to_confirm_seconds": upload_to_confirm_seconds,
+    }
+
+
 @router.post("/{inspection_id}/exception-photos")
 def upload_exception_photo(
     inspection_id: int,
@@ -429,6 +661,8 @@ def upload_exception_photo(
     inspection = _find(db, inspection_id, user, lock=True)
     if inspection is None:
         return _not_found()
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
+        return denied
     if inspection.status != INSPECTION_STAFF_REVIEW:
         return _invalid_status(inspection)
     content_type = (file.content_type or "").lower()
@@ -538,6 +772,8 @@ def owner_action(
         return error_response(404, "NOT_FOUND", "요청한 작업을 찾을 수 없습니다")
     before, after, role = transitions[action]
     if (denied := forbidden_unless_role(user, role)) is not None:
+        return denied
+    if (denied := _forbidden_unless_assigned(user, inspection)) is not None:
         return denied
     if inspection.status != before:
         return _invalid_status(inspection)
