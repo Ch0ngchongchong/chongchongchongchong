@@ -13,6 +13,7 @@ from app.db import get_db
 from app.models.product import Product
 from app.models.user import StoreUser
 from app.schemas.product import ProductCreate, ProductOut, ProductUpdate
+from app.services.auth import decode_access_token
 
 router = APIRouter(prefix="/products", tags=["products"])
 
@@ -26,11 +27,26 @@ def error_response(status_code: int, code: str, message: str) -> JSONResponse:
 
 
 def get_current_user(
-    x_user_id: int = Header(...),
+    authorization: str | None = Header(default=None),
+    x_user_id: int | None = Header(default=None, alias="X-User-Id"),
     db: Session = Depends(get_db),
 ) -> StoreUser:
-    """X-User-Id 헤더로 매장 사용자를 찾는다 (API.md 공통 규칙 [제안]).
-    없는 사용자일 때의 응답은 API.md에 없어 미정이다. 임시로 401을 돌려준다."""
+    """Authorization: Bearer <JWT>가 있으면 그걸로, 없으면 기존처럼 X-User-Id
+    헤더로 매장 사용자를 찾는다 (API.md 공통 규칙 [제안]. 2026-11-24: 로그인은
+    추가만 했다, X-User-Id를 없애지 않는다).
+    없는 사용자·유효하지 않은 토큰일 때의 응답은 API.md에 없어 미정이다.
+    임시로 401을 돌려준다."""
+    if authorization is not None and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1]
+        user_id = decode_access_token(token)
+        if user_id is None:
+            raise HTTPException(status_code=401, detail="유효하지 않은 토큰입니다")
+        user = db.get(StoreUser, user_id)
+        if user is None:
+            raise HTTPException(status_code=401, detail="등록되지 않은 사용자입니다")
+        return user
+    if x_user_id is None:
+        raise HTTPException(status_code=401, detail="인증 정보가 없습니다")
     user = db.get(StoreUser, x_user_id)
     if user is None:
         raise HTTPException(status_code=401, detail="등록되지 않은 사용자입니다")
